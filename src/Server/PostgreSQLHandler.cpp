@@ -1,9 +1,10 @@
 #include "PostgreSQLHandler.h"
+#include <Core/Settings.h>
 #include <IO/ReadBufferFromPocoSocket.h>
 #include <IO/ReadBufferFromString.h>
 #include <IO/ReadHelpers.h>
-#include <IO/WriteBufferFromPocoSocket.h>
 #include <IO/WriteBuffer.h>
+#include <IO/WriteBufferFromPocoSocket.h>
 #include <Interpreters/Context.h>
 #include <Interpreters/executeQuery.h>
 #include <Parsers/parseQuery.h>
@@ -14,31 +15,39 @@
 #include <Common/config_version.h>
 #include <Common/randomSeed.h>
 #include <Common/setThreadName.h>
-#include <Core/Settings.h>
+
+#include <Poco/Util/LayeredConfiguration.h>
 
 #if USE_SSL
-#   include <Poco/Net/SecureStreamSocket.h>
-#   include <Poco/Net/SSLManager.h>
+#    include <Server/CertificateReloader.h>
+#    include <Poco/Net/SSLManager.h>
+#    include <Poco/Net/SecureStreamSocket.h>
+#    include <Poco/Net/Utility.h>
+#    include <Poco/StringTokenizer.h>
 #endif
 
 namespace DB
 {
 namespace Setting
 {
-    extern const SettingsBool allow_settings_after_format_in_insert;
-    extern const SettingsUInt64 max_parser_backtracks;
-    extern const SettingsUInt64 max_parser_depth;
-    extern const SettingsUInt64 max_query_size;
-    extern const SettingsBool implicit_select;
+extern const SettingsBool allow_settings_after_format_in_insert;
+extern const SettingsUInt64 max_parser_backtracks;
+extern const SettingsUInt64 max_parser_depth;
+extern const SettingsUInt64 max_query_size;
+extern const SettingsBool implicit_select;
+extern const SettingsString tls_ca_key;
+extern const SettingsString tls_cert_path;
+extern const SettingsString tls_key_path;
 }
 
 namespace ErrorCodes
 {
-    extern const int SYNTAX_ERROR;
+extern const int SYNTAX_ERROR;
 }
 
 PostgreSQLHandler::PostgreSQLHandler(
     const Poco::Net::StreamSocket & socket_,
+    const std::string & prefix_,
     IServer & server_,
     TCPServer & tcp_server_,
     bool ssl_enabled_,
@@ -47,6 +56,8 @@ PostgreSQLHandler::PostgreSQLHandler(
     const ProfileEvents::Event & read_event_,
     const ProfileEvents::Event & write_event_)
     : Poco::Net::TCPServerConnection(socket_)
+    , config(server_.config())
+    , prefix(prefix_)
     , server(server_)
     , tcp_server(tcp_server_)
     , ssl_enabled(ssl_enabled_)
@@ -56,6 +67,66 @@ PostgreSQLHandler::PostgreSQLHandler(
     , authentication_manager(auth_methods_)
 {
     changeIO(socket());
+
+#if USE_SSL
+    params.privateKeyFile = config.getString(prefix + Poco::Net::SSLManager::CFG_PRIV_KEY_FILE, "");
+    params.certificateFile = config.getString(prefix + Poco::Net::SSLManager::CFG_CERTIFICATE_FILE, params.privateKeyFile);
+    if (!params.privateKeyFile.empty() && !params.certificateFile.empty())
+    {
+        auto ctx = Poco::Net::SSLManager::instance().defaultServerContext();
+        params.caLocation = config.getString(prefix + Poco::Net::SSLManager::CFG_CA_LOCATION, ctx->getCAPaths().caLocation);
+
+        params.verificationMode = Poco::Net::SSLManager::VAL_VER_MODE;
+        if (config.hasProperty(prefix + Poco::Net::SSLManager::CFG_VER_MODE))
+        {
+            std::string mode = config.getString(prefix + Poco::Net::SSLManager::CFG_VER_MODE);
+            params.verificationMode = Poco::Net::Utility::convertVerificationMode(mode);
+        }
+
+        params.verificationDepth = config.getInt(prefix + Poco::Net::SSLManager::CFG_VER_DEPTH, Poco::Net::SSLManager::VAL_VER_DEPTH);
+        params.loadDefaultCAs
+            = config.getBool(prefix + Poco::Net::SSLManager::CFG_ENABLE_DEFAULT_CA, Poco::Net::SSLManager::VAL_ENABLE_DEFAULT_CA);
+        params.cipherList = config.getString(prefix + Poco::Net::SSLManager::CFG_CIPHER_LIST, Poco::Net::SSLManager::VAL_CIPHER_LIST);
+        params.cipherList
+            = config.getString(prefix + Poco::Net::SSLManager::CFG_CYPHER_LIST, params.cipherList); // for backwards compatibility
+
+        bool require_tlsv1 = config.getBool(prefix + Poco::Net::SSLManager::CFG_REQUIRE_TLSV1, false);
+        bool require_tlsv1_1 = config.getBool(prefix + Poco::Net::SSLManager::CFG_REQUIRE_TLSV1_1, false);
+        bool require_tlsv1_2 = config.getBool(prefix + Poco::Net::SSLManager::CFG_REQUIRE_TLSV1_2, false);
+        if (require_tlsv1_2)
+            usage = Poco::Net::Context::TLSV1_2_SERVER_USE;
+        else if (require_tlsv1_1)
+            usage = Poco::Net::Context::TLSV1_1_SERVER_USE;
+        else if (require_tlsv1)
+            usage = Poco::Net::Context::TLSV1_SERVER_USE;
+        else
+            usage = Poco::Net::Context::SERVER_USE;
+
+        params.dhParamsFile = config.getString(prefix + Poco::Net::SSLManager::CFG_DH_PARAMS_FILE, "");
+        params.ecdhCurve = config.getString(prefix + Poco::Net::SSLManager::CFG_ECDH_CURVE, "");
+
+        std::string disabled_protocols_list = config.getString(prefix + Poco::Net::SSLManager::CFG_DISABLE_PROTOCOLS, "");
+        Poco::StringTokenizer dp_tok(
+            disabled_protocols_list, ";,", Poco::StringTokenizer::TOK_TRIM | Poco::StringTokenizer::TOK_IGNORE_EMPTY);
+        disabled_protocols = 0;
+        for (const auto & token : dp_tok)
+        {
+            if (token == "sslv2")
+                disabled_protocols |= Poco::Net::Context::PROTO_SSLV2;
+            else if (token == "sslv3")
+                disabled_protocols |= Poco::Net::Context::PROTO_SSLV3;
+            else if (token == "tlsv1")
+                disabled_protocols |= Poco::Net::Context::PROTO_TLSV1;
+            else if (token == "tlsv1_1")
+                disabled_protocols |= Poco::Net::Context::PROTO_TLSV1_1;
+            else if (token == "tlsv1_2")
+                disabled_protocols |= Poco::Net::Context::PROTO_TLSV1_2;
+        }
+
+        extended_verification = config.getBool(prefix + Poco::Net::SSLManager::CFG_EXTENDED_VERIFICATION, false);
+        prefer_server_ciphers = config.getBool(prefix + Poco::Net::SSLManager::CFG_PREFER_SERVER_CIPHERS, false);
+    }
+#endif
 }
 
 void PostgreSQLHandler::changeIO(Poco::Net::StreamSocket & socket)
@@ -118,20 +189,17 @@ void PostgreSQLHandler::run()
                 default:
                     message_transport->send(
                         PostgreSQLProtocol::Messaging::ErrorOrNoticeResponse(
-                            PostgreSQLProtocol::Messaging::ErrorOrNoticeResponse::ERROR,
-                            "0A000",
-                            "Command is not supported"),
+                            PostgreSQLProtocol::Messaging::ErrorOrNoticeResponse::ERROR, "0A000", "Command is not supported"),
                         true);
                     LOG_ERROR(log, "Command is not supported. Command code {:d}", static_cast<Int32>(message_type));
                     message_transport->dropMessage();
             }
         }
     }
-    catch (const Poco::Exception &exc)
+    catch (const Poco::Exception & exc)
     {
         log->log(exc);
     }
-
 }
 
 bool PostgreSQLHandler::startup()
@@ -140,7 +208,8 @@ bool PostgreSQLHandler::startup()
     Int32 info;
     establishSecureConnection(payload_size, info);
 
-    if (static_cast<PostgreSQLProtocol::Messaging::FrontMessageType>(info) == PostgreSQLProtocol::Messaging::FrontMessageType::CANCEL_REQUEST)
+    if (static_cast<PostgreSQLProtocol::Messaging::FrontMessageType>(info)
+        == PostgreSQLProtocol::Messaging::FrontMessageType::CANCEL_REQUEST)
     {
         LOG_DEBUG(log, "Client issued request canceling");
         cancelRequest();
@@ -169,8 +238,7 @@ bool PostgreSQLHandler::startup()
 
     sendParameterStatusData(*start_up_msg);
 
-    message_transport->send(
-        PostgreSQLProtocol::Messaging::BackendKeyData(connection_id, secret_key), true);
+    message_transport->send(PostgreSQLProtocol::Messaging::BackendKeyData(connection_id, secret_key), true);
 
     LOG_DEBUG(log, "Successfully finished Startup stage");
     return true;
@@ -209,12 +277,29 @@ void PostgreSQLHandler::establishSecureConnection(Int32 & payload_size, Int32 & 
 void PostgreSQLHandler::makeSecureConnectionSSL()
 {
     message_transport->send('S', true);
-    ss = std::make_shared<Poco::Net::SecureStreamSocket>(
-        Poco::Net::SecureStreamSocket::attach(socket(), Poco::Net::SSLManager::instance().defaultServerContext()));
+
+    auto ctx = Poco::Net::SSLManager::instance().defaultServerContext();
+    if (!params.privateKeyFile.empty() && !params.certificateFile.empty())
+    {
+        ctx = Poco::Net::SSLManager::instance().getCustomServerContext(prefix);
+        if (!ctx)
+        {
+            ctx = new Poco::Net::Context(usage, params);
+            ctx->disableProtocols(disabled_protocols);
+            ctx->enableExtendedCertificateVerification(extended_verification);
+            if (prefer_server_ciphers)
+                ctx->preferServerCiphers();
+            CertificateReloader::instance().tryLoad(config, ctx->sslContext(), prefix);
+            ctx = Poco::Net::SSLManager::instance().setCustomServerContext(prefix, ctx);
+        }
+    }
+    ss = std::make_shared<Poco::Net::SecureStreamSocket>(Poco::Net::SecureStreamSocket::attach(socket(), ctx));
     changeIO(*ss);
 }
 #else
-void PostgreSQLHandler::makeSecureConnectionSSL() {}
+void PostgreSQLHandler::makeSecureConnectionSSL()
+{
+}
 #endif
 
 void PostgreSQLHandler::sendParameterStatusData(PostgreSQLProtocol::Messaging::StartupMessage & start_up_message)
@@ -236,8 +321,8 @@ void PostgreSQLHandler::sendParameterStatusData(PostgreSQLProtocol::Messaging::S
 
 void PostgreSQLHandler::cancelRequest()
 {
-    std::unique_ptr<PostgreSQLProtocol::Messaging::CancelRequest> msg =
-        message_transport->receiveWithPayloadSize<PostgreSQLProtocol::Messaging::CancelRequest>(8);
+    std::unique_ptr<PostgreSQLProtocol::Messaging::CancelRequest> msg
+        = message_transport->receiveWithPayloadSize<PostgreSQLProtocol::Messaging::CancelRequest>(8);
 
     String query = fmt::format("KILL QUERY WHERE query_id = 'postgres:{:d}:{:d}'", msg->process_id, msg->secret_key);
     ReadBufferFromString replacement(query);
@@ -271,8 +356,7 @@ void PostgreSQLHandler::processQuery()
 {
     try
     {
-        std::unique_ptr<PostgreSQLProtocol::Messaging::Query> query =
-            message_transport->receive<PostgreSQLProtocol::Messaging::Query>();
+        std::unique_ptr<PostgreSQLProtocol::Messaging::Query> query = message_transport->receive<PostgreSQLProtocol::Messaging::Query>();
 
         if (isEmptyQuery(query->query))
         {
@@ -280,13 +364,14 @@ void PostgreSQLHandler::processQuery()
             return;
         }
 
-        bool psycopg2_cond = query->query == "BEGIN" || query->query == "COMMIT"; // psycopg2 starts and ends queries with BEGIN/COMMIT commands
-        bool jdbc_cond = query->query.contains("SET extra_float_digits") || query->query.contains("SET application_name"); // jdbc starts with setting this parameter
+        bool psycopg2_cond
+            = query->query == "BEGIN" || query->query == "COMMIT"; // psycopg2 starts and ends queries with BEGIN/COMMIT commands
+        bool jdbc_cond = query->query.contains("SET extra_float_digits")
+            || query->query.contains("SET application_name"); // jdbc starts with setting this parameter
         if (psycopg2_cond || jdbc_cond)
         {
-            message_transport->send(
-                PostgreSQLProtocol::Messaging::CommandComplete(
-                    PostgreSQLProtocol::Messaging::CommandComplete::classifyQuery(query->query), 0));
+            message_transport->send(PostgreSQLProtocol::Messaging::CommandComplete(
+                PostgreSQLProtocol::Messaging::CommandComplete::classifyQuery(query->query), 0));
             return;
         }
 
@@ -316,11 +401,10 @@ void PostgreSQLHandler::processQuery()
             ReadBufferFromString read_buf(spl_query);
             executeQuery(read_buf, *out, false, query_context, {});
 
-            PostgreSQLProtocol::Messaging::CommandComplete::Command command =
-                PostgreSQLProtocol::Messaging::CommandComplete::classifyQuery(spl_query);
+            PostgreSQLProtocol::Messaging::CommandComplete::Command command
+                = PostgreSQLProtocol::Messaging::CommandComplete::classifyQuery(spl_query);
             message_transport->send(PostgreSQLProtocol::Messaging::CommandComplete(command, 0), true);
         }
-
     }
     catch (const Exception & e)
     {

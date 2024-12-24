@@ -1,18 +1,19 @@
 #pragma once
 
-#include <Common/CurrentMetrics.h>
-#include "config.h"
 #include <Core/PostgreSQLProtocol.h>
 #include <Poco/Net/TCPServerConnection.h>
+#include <Common/CurrentMetrics.h>
 #include "IServer.h"
+#include "config.h"
 
 #if USE_SSL
-#   include <Poco/Net/SecureStreamSocket.h>
+#    include <Poco/Net/SSLManager.h>
+#    include <Poco/Net/SecureStreamSocket.h>
 #endif
 
 namespace CurrentMetrics
 {
-    extern const Metric PostgreSQLConnection;
+extern const Metric PostgreSQLConnection;
 }
 
 namespace DB
@@ -29,6 +30,7 @@ class PostgreSQLHandler : public Poco::Net::TCPServerConnection
 public:
     PostgreSQLHandler(
         const Poco::Net::StreamSocket & socket_,
+        const std::string & prefix_,
         IServer & server_,
         TCPServer & tcp_server_,
         bool ssl_enabled_,
@@ -41,6 +43,18 @@ public:
 
 private:
     LoggerPtr log = getLogger("PostgreSQLHandler");
+
+#if USE_SSL
+    std::shared_ptr<Poco::Net::SecureStreamSocket> ss;
+
+    Poco::Net::Context::Params params [[maybe_unused]];
+    Poco::Net::Context::Usage usage [[maybe_unused]];
+    int disabled_protocols = 0;
+    bool extended_verification = false;
+    bool prefer_server_ciphers = false;
+    const Poco::Util::LayeredConfiguration & config [[maybe_unused]];
+    std::string prefix [[maybe_unused]];
+#endif
 
     IServer & server;
     TCPServer & tcp_server;
@@ -55,10 +69,6 @@ private:
 
     ProfileEvents::Event read_event;
     ProfileEvents::Event write_event;
-
-#if USE_SSL
-    std::shared_ptr<Poco::Net::SecureStreamSocket> ss;
-#endif
 
     PostgreSQLProtocol::PGAuthentication::AuthenticationManager authentication_manager;
 
