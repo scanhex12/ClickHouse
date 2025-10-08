@@ -41,6 +41,7 @@
 #include <Poco/JSON/Array.h>
 #include <Poco/Dynamic/Var.h>
 #include <Common/FailPoint.h>
+#include "Storages/ObjectStorage/DataLakes/Iceberg/IcebergDataObjectInfo.h"
 #include <Disks/ObjectStorages/StoredObject.h>
 #include <DataTypes/DataTypeNullable.h>
 #include <Functions/CastOverloadResolver.h>
@@ -1313,7 +1314,8 @@ IcebergStorageSink::IcebergStorageSink(
     ContextPtr context_,
     std::shared_ptr<DataLake::ICatalog> catalog_,
     const StorageID & table_id_,
-    bool use_previous_snapshots_)
+    bool use_previous_snapshots_,
+    ObjectIterator existing_files_iterator_)
     : SinkToStorage(sample_block_)
     , sample_block(sample_block_)
     , object_storage(object_storage_)
@@ -1323,6 +1325,7 @@ IcebergStorageSink::IcebergStorageSink(
     , catalog(catalog_)
     , table_id(table_id_)
     , use_previous_snapshots(use_previous_snapshots_)
+    , existing_files_iterator(existing_files_iterator_)
 {
     configuration->update(object_storage, context, /* if_not_updated_before */ true);
     auto log = getLogger("IcebergWrites");
@@ -1502,12 +1505,34 @@ bool IcebergStorageSink::initializeMetadata()
 
     try
     {
+        std::unordered_map<ChunkPartitioner::PartitionKey, Strings, ChunkPartitioner::PartitionKeyHasher> additional_files;
+        if (existing_files_iterator)
+        {
+            while (true)
+            {
+                auto file = std::static_pointer_cast<IcebergDataObjectInfo>(existing_files_iterator->next(0));
+                if (!file)
+                    break;
+                additional_files[file->partition_values].push_back(file->data_object_file_path_key);
+            }
+        }
         for (const auto & [partition_key, writer] : writer_per_partition_key)
         {
             auto [manifest_entry_name, storage_manifest_entry_name] = filename_generator.generateManifestEntryName();
             manifest_entries_in_storage.push_back(storage_manifest_entry_name);
             manifest_entries.push_back(manifest_entry_name);
 
+            auto total_files = writer.getDataFiles();
+            std::optional<DataFileStatistics> total_statistics;
+            if (auto it = additional_files.find(partition_key); it != additional_files.end())
+            {
+                for (auto && file : it->second)
+                    total_files.push_back(file);
+            }
+            else
+            {
+                total_statistics = writer.getResultStatistics();
+            }
             auto buffer_manifest_entry = object_storage->writeObject(
                 StoredObject(storage_manifest_entry_name), WriteMode::Rewrite, std::nullopt, DBMS_DEFAULT_BUFFER_SIZE, context->getWriteSettings());
             try
@@ -1517,8 +1542,8 @@ bool IcebergStorageSink::initializeMetadata()
                     partitioner ? partitioner->getColumns() : std::vector<String>{},
                     partition_key,
                     partitioner ? partitioner->getResultTypes() : std::vector<DataTypePtr>{},
-                    writer.getDataFiles(),
-                    writer.getResultStatistics(),
+                    total_files,
+                    total_statistics,
                     sample_block,
                     new_snapshot,
                     configuration->format,

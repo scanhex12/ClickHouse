@@ -12,6 +12,7 @@ namespace DB::Iceberg
 #if USE_AVRO
 
 void compactIcebergTable(
+    const StorageMetadataPtr & metadata_snapshot,
     ObjectStoragePtr object_storage_,
     StorageObjectStorageConfigurationPtr configuration_,
     const std::optional<FormatSettings> & format_settings_,

@@ -271,7 +271,8 @@ public:
         ContextPtr context_,
         std::shared_ptr<DataLake::ICatalog> catalog_,
         const StorageID & table_id_,
-        bool use_previous_snapshots_ = true);
+        bool use_previous_snapshots_ = true,
+        ObjectIterator existing_files_iterator_ = nullptr);
 
     ~IcebergStorageSink() override = default;
 
@@ -307,6 +308,7 @@ private:
     StorageID table_id;
     CompressionMethod metadata_compression_method;
     bool use_previous_snapshots;
+    ObjectIterator existing_files_iterator;
 };
 
 }

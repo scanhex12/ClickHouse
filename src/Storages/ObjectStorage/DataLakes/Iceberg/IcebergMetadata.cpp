@@ -333,6 +333,7 @@ bool IcebergMetadata::optimize(
         auto configuration_ptr = getConfiguration();
         const auto sample_block = std::make_shared<const Block>(metadata_snapshot->getSampleBlock());
         compactIcebergTable(
+            metadata_snapshot,
             object_storage,
             configuration_ptr,
             format_settings,

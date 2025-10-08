@@ -4910,6 +4910,9 @@ Possible values:
 - 0 - Disabled
 - 1 - Enabled
 )", 0) \
+    DECLARE(UInt64, iceberg_compaction_large_file_size, 1000000000, R"(
+Ai blya nado cheta napisat'
+)", 0) \
     \
     DECLARE(Bool, use_query_cache, false, R"(
 If turned on, `SELECT` queries may utilize the [query cache](../query-cache.md). Parameters [enable_reads_from_query_cache](#enable_reads_from_query_cache)
