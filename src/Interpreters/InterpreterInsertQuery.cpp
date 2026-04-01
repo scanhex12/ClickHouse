@@ -868,7 +868,7 @@ std::optional<QueryPipeline> InterpreterInsertQuery::distributedWriteIntoReplica
                 const auto columns = snapshot->getColumns(GetColumnsOptions(GetColumnsOptions::All).withVirtuals());
                 auto syntax = TreeRewriter(local_context).analyze(condition_ast, columns);
                 filter_dag = ExpressionAnalyzer(condition_ast, syntax, local_context).getActionsDAG(true, true);
-                predicate = filter_dag->getOutputs().at(0);            
+                predicate = filter_dag->getOutputs().at(0);
             }
             catch (...)
             {
