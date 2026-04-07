@@ -339,12 +339,10 @@ public:
 #if USE_AVRO && USE_PARQUET
         if ((*settings)[DataLakeStorageSetting::storage_catalog_type].changed || (*settings)[DataLakeStorageSetting::storage_aws_access_key_id].changed)
             throw Exception(ErrorCodes::BAD_ARGUMENTS, "Don't use deprecated settings storage_catalog_type and storage_catalog_url");
-        String database_name = table_id.getDatabaseName();
-        if (database_name.empty())
-            database_name = context->getCurrentDatabase();
-        DatabasePtr database = DatabaseCatalog::instance().tryGetDatabase(database_name);
+        const String db_name = table_id.hasDatabase() ? table_id.database_name : context->getCurrentDatabase();
+        DatabasePtr database = DatabaseCatalog::instance().tryGetDatabase(db_name);
         if (!database)
-            return nullptr;
+            throw Exception(ErrorCodes::LOGICAL_ERROR, "Database {} not found", db_name);
         auto datalake_database = std::dynamic_pointer_cast<DatabaseDataLake>(database);
         if (!datalake_database)
             return nullptr;
