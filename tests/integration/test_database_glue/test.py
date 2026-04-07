@@ -212,11 +212,13 @@ def create_clickhouse_glue_database(
     node.query(
         f"""
 DROP DATABASE IF EXISTS {name};
-SET allow_database_glue_catalog=true;
-SET write_full_path_in_iceberg_metadata=true;
 CREATE DATABASE {name} ENGINE = DataLakeCatalog('{BASE_URL}'{credential_args})
 SETTINGS {",".join((k+"="+repr(v) for k, v in settings.items()))}
-    """
+    """,
+        settings={
+            "allow_database_glue_catalog": 1,
+            "write_full_path_in_iceberg_metadata": 1,
+        },
     )
 
 def create_clickhouse_glue_table(
@@ -226,11 +228,14 @@ def create_clickhouse_glue_table(
 
     node.query(
         f"""
-SET allow_experimental_database_glue_catalog=true;
-SET write_full_path_in_iceberg_metadata=true;
 CREATE TABLE {CATALOG_NAME}.`{database_name}.{table_name}` {schema} ENGINE = IcebergS3('http://minio:9000/warehouse-glue/{table_name}/', '{minio_access_key}', '{minio_secret_key}')
 {settings_suffix}
-""")
+""",
+        settings={
+            "allow_experimental_database_glue_catalog": 1,
+            "write_full_path_in_iceberg_metadata": 1,
+        },
+    )
 
 def drop_clickhouse_glue_table(
     node, database_name, table_name
