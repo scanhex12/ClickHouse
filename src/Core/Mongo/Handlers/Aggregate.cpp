@@ -42,7 +42,7 @@ bool removeUnionsWithMissingCollections(
         return false;
 
     bool reads_other_collections = false;
-    for (auto stage_it = pipeline.Begin(); stage_it != pipeline.End();)
+    for (auto * stage_it = pipeline.Begin(); stage_it != pipeline.End();)
     {
         if (!stage_it->IsObject())
         {
