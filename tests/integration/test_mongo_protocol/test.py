@@ -2060,3 +2060,79 @@ def test_list_collections_and_databases_honor_filter_and_name_only(started_clust
             client.admin.command({"listDatabases": 1, "filter": bad_filter})
 
     database.command("dropDatabase")
+
+
+def test_unsupported_command_options_are_rejected(started_cluster):
+    """Options that change the result of a command - a `collation`, the `arrayFilters` of an update,
+    the `validator` of a collection - are not implemented, so a command carrying one is an error
+    rather than being answered as if the option were absent. A `collation` with the `simple` locale
+    asks for the binary comparison the translation does, and is accepted."""
+    client = make_client()
+    database = client["db_options"]
+    collection = database["t"]
+
+    collection.drop()
+    collection.insert_many([{"id": 1, "name": "foo"}, {"id": 2, "name": "FOO"}])
+
+    case_insensitive = {"locale": "en", "strength": 2}
+    for command in [
+        {"find": "t", "filter": {"name": "foo"}, "collation": case_insensitive},
+        {"count": "t", "query": {"name": "foo"}, "collation": case_insensitive},
+        {"distinct": "t", "key": "name", "collation": case_insensitive},
+        {"aggregate": "t", "pipeline": [{"$match": {"name": "foo"}}], "cursor": {}, "collation": case_insensitive},
+        {"delete": "t", "deletes": [{"q": {"name": "foo"}, "limit": 0, "collation": case_insensitive}]},
+        {
+            "update": "t",
+            "updates": [{"q": {"name": "foo"}, "u": {"$set": {"id": 3}}, "multi": True, "collation": case_insensitive}],
+        },
+        {
+            "update": "t",
+            "updates": [{"q": {"name": "foo"}, "u": {"$set": {"id": 3}}, "multi": True, "arrayFilters": [{"x": 1}]}],
+        },
+        {"find": "t", "filter": {"name": "foo"}, "let": {"x": 1}},
+    ]:
+        with pytest.raises(pymongo.errors.OperationFailure) as error:
+            database.command(command)
+        assert "is not supported" in str(error.value)
+
+    assert [doc["id"] for doc in collection.find({"name": "foo"}, collation={"locale": "simple"})] == [1]
+    assert collection.count_documents({}) == 2
+
+    # A malformed `upsert` is an error of its own rather than being read as an absent one.
+    for upsert in [1, "false"]:
+        with pytest.raises(pymongo.errors.OperationFailure) as error:
+            database.command(
+                {"update": "t", "updates": [{"q": {"id": 1}, "u": {"$set": {"name": "bar"}}, "multi": True, "upsert": upsert}]}
+            )
+        assert "must be a boolean" in str(error.value)
+    assert collection.count_documents({"name": "foo"}) == 1
+
+    # The options of `create` that ask for a collection with semantics of its own are rejected.
+    for options in [{"validator": {"age": {"$gte": 0}}}, {"capped": True, "size": 4096}, {"collation": case_insensitive}]:
+        with pytest.raises(pymongo.errors.OperationFailure) as error:
+            database.command({"create": "with_options", **options})
+        assert "is not supported" in str(error.value)
+    assert "with_options" not in database.list_collection_names()
+
+    database.command("dropDatabase")
+
+
+def test_insert_batch_is_all_or_nothing(started_cluster):
+    """An `insert` writes its batch as one block: a document that does not fit fails the whole
+    command before anything is written, so a retry of the batch does not duplicate a prefix of it.
+    An unordered batch asks for the opposite semantics and is rejected."""
+    client = make_client()
+    collection = client["db"]["insert_all_or_nothing"]
+
+    collection.drop()
+    collection.insert_one({"id": 0, "name": "first"})
+
+    with pytest.raises(pymongo.errors.PyMongoError):
+        collection.insert_many([{"id": 1, "name": "a"}, {"id": 2, "unknown_field": "b"}, {"id": 3, "name": "c"}])
+    assert [doc["id"] for doc in collection.find({})] == [0]
+
+    with pytest.raises(pymongo.errors.PyMongoError):
+        collection.insert_many([{"id": 4, "name": "d"}], ordered=False)
+    assert [doc["id"] for doc in collection.find({})] == [0]
+
+    collection.drop()

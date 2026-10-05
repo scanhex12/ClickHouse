@@ -735,6 +735,20 @@ std::optional<Int64> getWholeNumberOption(const rapidjson::Value & json, const c
     return it->value.GetInt64();
 }
 
+/// A batch larger than the `maxWriteBatchSize` we advertise is refused, as Mongo does: a driver
+/// never sends one, and the `insert` handler relies on the bound to write a batch as one block.
+static void checkWriteBatchSize(const std::vector<Document> & batch, const char * field_name, const char * command)
+{
+    if (batch.size() > MAX_WRITE_BATCH_SIZE)
+        throw Exception(
+            ErrorCodes::LIMIT_EXCEEDED,
+            "The '{}' of a '{}' command has {} elements, while at most {} are allowed",
+            field_name,
+            command,
+            batch.size(),
+            MAX_WRITE_BATCH_SIZE);
+}
+
 std::vector<Document>
 getWriteBatch(const std::vector<OpMessageSection> & sections, const char * field_name, const char * command)
 {
@@ -762,7 +776,10 @@ getWriteBatch(const std::vector<OpMessageSection> & sections, const char * field
     }
 
     if (!batch.empty())
+    {
+        checkWriteBatchSize(batch, field_name, command);
         return batch;
+    }
 
     /// Otherwise the batch is an array of the command body. Its elements are taken from the BSON
     /// directly, so that the types of their values survive: a conversion to JSON and back would
@@ -795,6 +812,7 @@ getWriteBatch(const std::vector<OpMessageSection> & sections, const char * field
     if (batch.empty())
         throw Exception(ErrorCodes::BAD_ARGUMENTS, "The '{}' array of a '{}' command is empty", field_name, command);
 
+    checkWriteBatchSize(batch, field_name, command);
     return batch;
 }
 
@@ -806,6 +824,26 @@ void rejectUnorderedWriteBatch(const Document & command, const char * command_na
             ErrorCodes::NOT_IMPLEMENTED,
             "The '{}' command supports only ordered batches; 'ordered: false' is not supported",
             command_name);
+}
+
+void rejectUnsupportedOptions(const rapidjson::Value & json, const char * command, std::initializer_list<std::string_view> options)
+{
+    for (const auto option : options)
+    {
+        auto it = json.FindMember(rapidjson::StringRef(option.data(), option.size()));
+        if (it == json.MemberEnd() || it->value.IsNull())
+            continue;
+
+        if (option == "collation" && it->value.IsObject() && it->value.MemberCount() == 1)
+        {
+            auto locale_it = it->value.FindMember("locale");
+            if (locale_it != it->value.MemberEnd() && locale_it->value.IsString()
+                && std::string_view(locale_it->value.GetString()) == "simple")
+                continue;
+        }
+
+        throw Exception(ErrorCodes::NOT_IMPLEMENTED, "The '{}' option of a '{}' command is not supported", option, command);
+    }
 }
 
 String CollectionRef::getQualifiedName() const

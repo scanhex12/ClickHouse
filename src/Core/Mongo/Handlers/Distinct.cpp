@@ -28,6 +28,7 @@ std::vector<Document> DistinctHandler::handle(const std::vector<OpMessageSection
     auto collection = getCollectionRef(document, "distinct");
 
     auto json_representation = document.getRapidJSONRepresentation();
+    rejectUnsupportedOptions(json_representation, "distinct", {"collation"});
     auto key_it = json_representation.FindMember("key");
     if (key_it == json_representation.MemberEnd() || !key_it->value.IsString())
         throw Exception(ErrorCodes::BAD_ARGUMENTS, "The 'distinct' command must name a field in 'key'");

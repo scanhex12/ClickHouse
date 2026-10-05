@@ -106,6 +106,7 @@ std::vector<Document> AggregateHandler::handle(const std::vector<OpMessageSectio
     auto collection = getCollectionRef(document, "aggregate");
 
     auto json_representation = document.getRapidJSONRepresentation();
+    rejectUnsupportedOptions(json_representation, "aggregate", {"collation", "let"});
     auto pipeline_it = json_representation.FindMember("pipeline");
     if (pipeline_it == json_representation.MemberEnd() || !pipeline_it->value.IsArray())
         throw Exception(ErrorCodes::BAD_ARGUMENTS, "The 'pipeline' of an 'aggregate' command must be an array of stages");

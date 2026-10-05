@@ -357,6 +357,7 @@ void InsertHandler::createTable(
 std::vector<Document> InsertHandler::handle(const std::vector<OpMessageSection> & documents, std::shared_ptr<QueryExecutor> executor)
 {
     auto collection = getCollectionRef(documents[0].documents[0], "insert");
+    rejectUnorderedWriteBatch(documents[0].documents[0], "insert");
 
     /// The documents to insert come either as a `documents` document sequence or as the
     /// `documents` array of the command body itself, see `getWriteBatch`.
@@ -393,10 +394,28 @@ std::vector<Document> InsertHandler::handle(const std::vector<OpMessageSection> 
         data << buffer.GetString() << "\n";
     }
 
-    executor->execute(fmt::format(
-        "INSERT INTO {} SETTINGS input_format_skip_unknown_fields = 0 FORMAT JSONEachRow\n{}",
-        collection.getQualifiedName(),
-        data.str()));
+    /** The whole batch is one `INSERT`, and it is written all or nothing. Mongo writes the documents
+      * of an ordered batch one by one and keeps the ones before a failing document; here a document
+      * that does not fit - an unknown field, a value of a wrong type - fails the whole command
+      * before anything is written, so a client that retries the batch does not duplicate a prefix
+      * of it. That holds because every document is parsed before the block is written: the batch
+      * is at most `MAX_WRITE_BATCH_SIZE` documents (see `getWriteBatch`), which fits into a single
+      * block, and the settings below keep it from being split into several blocks, each written
+      * on its own, or from being deferred by an asynchronous insert whose error the reply would
+      * not see.
+      */
+    SettingsChanges insert_settings;
+    insert_settings.setSetting("max_insert_block_size", Field(UInt64(MAX_WRITE_BATCH_SIZE)));
+    insert_settings.setSetting("max_insert_block_size_bytes", Field(UInt64(0)));
+    insert_settings.setSetting("input_format_parallel_parsing", Field(false));
+    insert_settings.setSetting("async_insert", Field(false));
+
+    executor->execute(
+        fmt::format(
+            "INSERT INTO {} SETTINGS input_format_skip_unknown_fields = 0 FORMAT JSONEachRow\n{}",
+            collection.getQualifiedName(),
+            data.str()),
+        insert_settings);
 
     bson_t * bson_doc = bson_new();
 

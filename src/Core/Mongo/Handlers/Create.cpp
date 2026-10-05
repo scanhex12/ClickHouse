@@ -2,8 +2,19 @@
 #include <Core/Mongo/Handlers/Create.h>
 #include <Core/Mongo/Handlers/HandlerRegistry.h>
 
+#include <algorithm>
+#include <string_view>
+
 #include <fmt/format.h>
+#include <Common/Exception.h>
 #include <Common/quoteString.h>
+
+#include <rapidjson/document.h>
+
+namespace DB::ErrorCodes
+{
+extern const int NOT_IMPLEMENTED;
+}
 
 namespace DB::MongoProtocol
 {
@@ -12,6 +23,25 @@ std::vector<Document> CreateHandler::handle(const std::vector<OpMessageSection> 
 {
     /// The collection to create is the value of the `create` field of the command itself.
     auto collection = getCollectionRef(documents[0].documents[0], "create");
+
+    /// Everything `createCollection` creates is the same plain placeholder table, while most of its
+    /// options - `validator`, `collation`, `capped`, `timeseries`, `viewOn`, `clusteredIndex` and so
+    /// on - ask for a collection with semantics of its own. Acknowledging them with `ok: 1` would
+    /// promise a validation, an ordering or an eviction that never happens, so any option other
+    /// than the generic fields every command may carry is rejected.
+    {
+        static constexpr std::string_view generic_fields[] = {
+            "create", "$db", "lsid", "$clusterTime", "$readPreference", "writeConcern", "comment",
+            "apiVersion", "apiStrict", "apiDeprecationErrors", "maxTimeMS"};
+
+        auto json = documents[0].documents[0].getRapidJSONRepresentation();
+        for (auto option = json.MemberBegin(); option != json.MemberEnd(); ++option)
+        {
+            std::string_view name(option->name.GetString(), option->name.GetStringLength());
+            if (std::find(std::begin(generic_fields), std::end(generic_fields), name) == std::end(generic_fields))
+                throw Exception(ErrorCodes::NOT_IMPLEMENTED, "The option '{}' of the 'create' command is not supported", name);
+        }
+    }
 
     /// Creating a namespace that already exists is an error in Mongo, not a no-op: clients rely
     /// on the duplicate-namespace error to detect that somebody else created the collection first.

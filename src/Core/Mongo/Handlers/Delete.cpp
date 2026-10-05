@@ -25,6 +25,7 @@ std::vector<Document> DeleteHandler::handle(const std::vector<OpMessageSection> 
 {
     auto collection = getCollectionRef(documents[0].documents[0], "delete");
     rejectUnorderedWriteBatch(documents[0].documents[0], "delete");
+    rejectUnsupportedOptions(documents[0].documents[0].getRapidJSONRepresentation(), "delete", {"let"});
 
     /// The specs come either as a `deletes` document sequence or as the `deletes` array of the
     /// command body itself, see `getWriteBatch`.
@@ -76,6 +77,7 @@ std::vector<Document> DeleteHandler::handle(const std::vector<OpMessageSection> 
         String serialized_filter;
         {
             auto json_representation = delete_spec.getRapidJSONRepresentation();
+            rejectUnsupportedOptions(json_representation, "delete", {"collation"});
             auto filter_it = json_representation.FindMember("q");
             if (filter_it == json_representation.MemberEnd())
                 throw Exception(ErrorCodes::BAD_ARGUMENTS, "The 'delete' command does not contain the 'q' filter");

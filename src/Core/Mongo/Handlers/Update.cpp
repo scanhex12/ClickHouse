@@ -44,6 +44,7 @@ std::vector<Document> UpdateHandler::handle(const std::vector<OpMessageSection> 
 {
     auto collection = getCollectionRef(sections[0].documents[0], "update");
     rejectUnorderedWriteBatch(sections[0].documents[0], "update");
+    rejectUnsupportedOptions(sections[0].documents[0].getRapidJSONRepresentation(), "update", {"let"});
 
     /// The specs come either as an `updates` document sequence or as the `updates` array of the
     /// command body itself, see `getWriteBatch`.
@@ -95,6 +96,7 @@ std::vector<Document> UpdateHandler::handle(const std::vector<OpMessageSection> 
         String serialized_update;
         {
             auto json_representation = update_spec.getRapidJSONRepresentation();
+            rejectUnsupportedOptions(json_representation, "update", {"collation", "arrayFilters"});
             serialized_filter = serializeRequiredMember(json_representation, "q");
             serialized_update = serializeRequiredMember(json_representation, "u");
 
@@ -109,8 +111,8 @@ std::vector<Document> UpdateHandler::handle(const std::vector<OpMessageSection> 
                     ErrorCodes::BAD_ARGUMENTS,
                     "The 'update' command supports only 'multi: true' (updateMany); updating a single document is not supported");
 
-            auto upsert_it = json_representation.FindMember("upsert");
-            if (upsert_it != json_representation.MemberEnd() && upsert_it->value.IsBool() && upsert_it->value.GetBool())
+            /// A malformed `upsert` is an error of its own, rather than being read as an absent one.
+            if (getBoolOption(json_representation, "upsert", "update").value_or(false))
                 throw Exception(ErrorCodes::BAD_ARGUMENTS, "The 'update' command does not support 'upsert: true'");
         }
 

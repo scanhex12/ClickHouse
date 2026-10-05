@@ -46,6 +46,10 @@ static constexpr UInt32 MAX_MESSAGE_SIZE = 48000000;
 /// from - every reply carries the whole result and a cursor id of 0.
 static constexpr UInt32 MAX_BSON_OBJECT_SIZE = 16777216;
 
+/// The largest number of documents or specs in one write command, which is the
+/// `maxWriteBatchSize` we advertise. Drivers split a larger batch into several commands.
+static constexpr UInt32 MAX_WRITE_BATCH_SIZE = 100000;
+
 /// The smallest possible BSON document: a 4-byte length and the terminating zero byte.
 static constexpr UInt32 MIN_DOCUMENT_SIZE = 5;
 

@@ -2,7 +2,9 @@
 
 #include <memory>
 #include <functional>
+#include <initializer_list>
 #include <optional>
+#include <string_view>
 #include <Core/Mongo/Document.h>
 #include <Core/Mongo/MongoProtocol.h>
 #include <Core/Mongo/Wire/OpMessage.h>
@@ -43,12 +45,22 @@ std::vector<Document>
 getWriteBatch(const std::vector<OpMessageSection> & sections, const char * field_name, const char * command);
 
 /** Rejects a write command whose `ordered` flag is `false`. The `delete` and `update` handlers
-  * apply their specs one after another and stop at the first error, i.e. they implement only the
-  * ordered semantics, the Mongo default. An unordered batch asks for the opposite - every spec is
+  * apply their specs one after another and stop at the first error, and the `insert` handler
+  * writes its documents all or nothing, i.e. they implement only the ordered semantics, the Mongo
+  * default, or a stricter form of it. An unordered batch asks for the opposite - every spec is
   * attempted regardless of the errors of the others - so it is an error rather than being
   * silently executed as an ordered one.
   */
 void rejectUnorderedWriteBatch(const Document & command, const char * command_name);
+
+/** Rejects the options of a command (or of one spec of a write batch) that change its result in a
+  * way the translation does not implement, e.g. a `collation` that makes `{"name": "foo"}` match
+  * `"FOO"`, or the `arrayFilters` of an update. Executing such a command without the option would
+  * answer a different question than the one asked, so it is an error instead. A `collation` with
+  * the `simple` locale asks for the binary comparison, which is what the translation does, and
+  * is accepted. An option that is absent or null is accepted.
+  */
+void rejectUnsupportedOptions(const rapidjson::Value & json, const char * command, std::initializer_list<std::string_view> options);
 
 /** The target of a Mongo command: the collection named by the command field itself and the
   * database taken from the `$db` field of the command document. Mongo databases are mapped

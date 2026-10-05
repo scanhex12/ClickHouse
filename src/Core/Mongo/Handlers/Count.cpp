@@ -27,6 +27,7 @@ std::vector<Document> CountHandler::handle(const std::vector<OpMessageSection> &
     auto collection = getCollectionRef(document, "count");
 
     auto json_representation = document.getRapidJSONRepresentation();
+    rejectUnsupportedOptions(json_representation, "count", {"collation"});
 
     /// `count` is the size of the result of a `find`, so its filter takes exactly the same
     /// path as the filter of a `find` - including the normalization of subdocument paths.
