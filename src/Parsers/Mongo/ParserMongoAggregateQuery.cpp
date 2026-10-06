@@ -87,6 +87,19 @@ ASTPtr makeAsterisk(const std::vector<std::string> & excluded)
     return asterisk;
 }
 
+/// Whether a select of `* EXCEPT (excluded)` keeps every field the stream is ordered by, so a later
+/// order-sensitive stage can still name them.
+bool exclusionPreservesOrderKeys(const MongoGroupOrder & order, const std::vector<std::string> & excluded)
+{
+    for (const auto & [key, _] : order.keys)
+    {
+        const auto * identifier = key->as<ASTIdentifier>();
+        if (!identifier || std::find(excluded.begin(), excluded.end(), identifier->name()) != excluded.end())
+            return false;
+    }
+    return true;
+}
+
 /** The `SELECT` a pipeline is being translated into, and the ones already finished below it.
   *
   * A stage either fills a clause that is still free, or wraps everything built so far into a
@@ -377,6 +390,13 @@ void translateProject(SelectChain & chain, const rapidjson::Value & stage)
     /// itself: an exclusion projection keeps everything it does not name, and an inclusion
     /// projection keeps the fields it names, but only where the name is the field rather than an
     /// expression computed under it.
+    if (fields.empty())
+    {
+        chain.select_list_preserves_order_keys = exclusionPreservesOrderKeys(chain.order, excluded);
+        chain.select_list = std::move(select_list);
+        return;
+    }
+
     chain.select_list_preserves_order_keys = true;
     for (const auto & [key, _] : chain.order.keys)
     {
@@ -388,16 +408,14 @@ void translateProject(SelectChain & chain, const rapidjson::Value & stage)
         }
 
         const auto & name = identifier->name();
-        const bool preserved = fields.empty()
-            ? std::find(excluded.begin(), excluded.end(), name) == excluded.end()
-            : std::any_of(
-                  fields.begin(),
-                  fields.end(),
-                  [&](const MongoProjectedField & field)
-                  {
-                      const auto * expression = field.expression->as<ASTIdentifier>();
-                      return field.name == name && expression && expression->name() == name;
-                  });
+        const bool preserved = std::any_of(
+            fields.begin(),
+            fields.end(),
+            [&](const MongoProjectedField & field)
+            {
+                const auto * expression = field.expression->as<ASTIdentifier>();
+                return field.name == name && expression && expression->name() == name;
+            });
 
         if (!preserved)
         {
@@ -521,6 +539,8 @@ void translateUnset(SelectChain & chain, const rapidjson::Value & stage)
 
     auto select_list = make_intrusive<ASTExpressionList>();
     select_list->children.push_back(makeAsterisk(removed));
+    /// `$unset` is the exclusion form of `$project`, so it carries the sort keys it does not remove.
+    chain.select_list_preserves_order_keys = exclusionPreservesOrderKeys(chain.order, removed);
     chain.select_list = std::move(select_list);
 }
 

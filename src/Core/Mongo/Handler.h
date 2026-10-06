@@ -76,6 +76,9 @@ struct CollectionRef
     String getQualifiedName() const;
 };
 
+/// Whether a database name is one `validateMongoDatabaseName` accepts.
+bool isValidMongoDatabaseName(const String & database);
+
 /** Checks a Mongo database name taken from the `$db` of a command. Every command validates it
   * the same way, so that the wire endpoint cannot create a namespace that a later command, such as
   * `dropDatabase`, or the dialect would reject.

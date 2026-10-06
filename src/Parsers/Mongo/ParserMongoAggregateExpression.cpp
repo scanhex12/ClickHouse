@@ -394,13 +394,21 @@ ASTPtr parseOperator(std::string_view name, const rapidjson::Value & argument)
         auto arguments = parseArguments(argument);
         requireArgumentCount(name, arguments, 2);
         /// Mongo indexes an array from zero and ClickHouse from one; a negative index counts from
-        /// the end in both, and there `-1` already means the same element.
+        /// the end in both, and there `-1` already means the same element. Only a non-negative
+        /// index is shifted. When the index is not a constant, its sign is known only at runtime,
+        /// so the shift is chosen by a condition on it.
         const auto * index = arguments[1]->as<ASTLiteral>();
-        const bool counts_from_the_end
-            = index && index->value.getType() == Field::Types::Int64 && index->value.safeGet<Int64>() < 0;
-        if (!counts_from_the_end)
-            arguments[1] = makeASTFunction("plus", arguments[1], makeLiteral(Field(UInt64(1))));
-        return makeASTFunction("arrayElement", arguments[0], arguments[1]);
+        if (index && index->value.getType() == Field::Types::Int64 && index->value.safeGet<Int64>() < 0)
+            return makeASTFunction("arrayElement", arguments[0], arguments[1]);
+        if (index)
+            return makeASTFunction("arrayElement", arguments[0], makeASTFunction("plus", arguments[1], makeLiteral(Field(UInt64(1)))));
+
+        auto shifted_index = makeASTFunction(
+            "if",
+            makeASTFunction("less", arguments[1]->clone(), makeLiteral(Field(Int64(0)))),
+            arguments[1]->clone(),
+            makeASTFunction("plus", arguments[1], makeLiteral(Field(UInt64(1)))));
+        return makeASTFunction("arrayElement", arguments[0], std::move(shifted_index));
     }
 
     if (name == "$in")

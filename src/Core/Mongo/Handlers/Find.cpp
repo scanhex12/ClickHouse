@@ -8,6 +8,8 @@
 #include <IO/WriteBufferFromString.h>
 #include <Common/Exception.h>
 
+#include <algorithm>
+
 #include <bson/bson.h>
 #include <rapidjson/document.h>
 #include <rapidjson/stringbuffer.h>
@@ -16,6 +18,7 @@
 namespace DB::ErrorCodes
 {
 extern const int BAD_ARGUMENTS;
+extern const int NOT_IMPLEMENTED;
 }
 
 namespace DB::MongoProtocol
@@ -81,6 +84,30 @@ std::vector<Document> FindHandler::handle(const std::vector<OpMessageSection> & 
     if (skip && *skip < 0)
         throw Exception(ErrorCodes::BAD_ARGUMENTS, "The 'skip' of a 'find' command must not be negative");
 
+    /// Mongo reads `limit: 0` as no limit at all and a negative limit as its absolute
+    /// value, the same way `count` does. The magnitude is taken in the unsigned domain,
+    /// where negating the smallest `Int64` is well-defined. Zero means no limit.
+    UInt64 limit_magnitude = 0;
+    if (limit)
+        limit_magnitude = *limit < 0 ? -static_cast<UInt64>(*limit) : static_cast<UInt64>(*limit);
+
+    /// The reply always holds the whole result in its first batch and closes the cursor (see
+    /// `executeSelectIntoCursor`). Without `singleBatch`, `batchSize` only says how the result is
+    /// split into batches, so a single batch is the same answer. With `singleBatch` the cursor is
+    /// closed after the first batch, so `batchSize` bounds the number of documents returned, which
+    /// is a limit.
+    auto batch_size = getWholeNumberOption(json_representation, "batchSize", "find");
+    if (batch_size && *batch_size < 0)
+        throw Exception(ErrorCodes::BAD_ARGUMENTS, "The 'batchSize' of a 'find' command must not be negative");
+    if (getBoolOption(json_representation, "singleBatch", "find").value_or(false) && batch_size)
+    {
+        if (*batch_size == 0)
+            throw Exception(
+                ErrorCodes::NOT_IMPLEMENTED, "A 'batchSize' of 0 together with 'singleBatch' of a 'find' command is not supported");
+        const auto batch_limit = static_cast<UInt64>(*batch_size);
+        limit_magnitude = limit_magnitude == 0 ? batch_limit : std::min(limit_magnitude, batch_limit);
+    }
+
     auto sorting = serializeMember(json_representation, "sort");
     if (!sorting.empty())
         sorting = modifyFilter(sorting);
@@ -89,11 +116,8 @@ std::vector<Document> FindHandler::handle(const std::vector<OpMessageSection> & 
     /// as `db.<collection>` keeps the text independent of the database name, which may itself
     /// be `db`.
     auto mongo_dialect_query = fmt::format("db.{}.find({})", collection.collection, serialized_filter);
-    /// Mongo reads `limit: 0` as no limit at all and a negative limit as its absolute
-    /// value, the same way `count` does. The magnitude is taken in the unsigned domain,
-    /// where negating the smallest `Int64` is well-defined.
-    if (limit && *limit != 0)
-        mongo_dialect_query += fmt::format(".limit({})", *limit < 0 ? -static_cast<UInt64>(*limit) : static_cast<UInt64>(*limit));
+    if (limit_magnitude != 0)
+        mongo_dialect_query += fmt::format(".limit({})", limit_magnitude);
     if (skip && *skip != 0)
         mongo_dialect_query += fmt::format(".skip({})", *skip);
     if (!sorting.empty())

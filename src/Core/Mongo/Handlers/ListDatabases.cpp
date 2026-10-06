@@ -41,7 +41,9 @@ std::vector<Document> ListDatabasesHandler::handle(
         size_t index = 0;
         for (const auto & name : names)
         {
-            if (name.empty() || !name_filter(name))
+            /// A ClickHouse database whose name is not a legal Mongo database name cannot be used by
+            /// any other command, so it is not advertised either.
+            if (!isValidMongoDatabaseName(name) || !name_filter(name))
                 continue;
 
             bson_t database_doc;

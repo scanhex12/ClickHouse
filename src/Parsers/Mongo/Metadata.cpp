@@ -21,7 +21,9 @@ namespace
   * part of any recognized syntax. Only a `find` carries suffixes - `.limit(...)`, `.skip(...)`
   * and `.sort(...)` - and everything else must be whitespace: without this check
   * `db.t.find({}) garbage` would silently run as `db.t.find({})`, and a misspelled suffix such
-  * as `.limt(1)` would silently drop the limit instead of reporting it.
+  * as `.limt(1)` would silently drop the limit instead of reporting it. A suffix given more than
+  * once is an error as well: only the first occurrence of each is applied, so a later one would
+  * be silently dropped.
   */
 void validateStatementTail(const char * begin, const char * end, bool is_select)
 {
@@ -30,6 +32,10 @@ void validateStatementTail(const char * begin, const char * end, bool is_select)
     /// The text handed here may reach beyond the statement in the wire path; the tail of this
     /// statement ends at its terminator.
     const char * statement_end = findStatementEnd(pos, end);
+
+    bool seen_limit = false;
+    bool seen_skip = false;
+    bool seen_sort = false;
 
     while (pos != statement_end)
     {
@@ -47,6 +53,10 @@ void validateStatementTail(const char * begin, const char * end, bool is_select)
             std::string_view suffix(name_begin, name_end - name_begin);
             if ((suffix == "limit" || suffix == "skip" || suffix == "sort") && name_end != statement_end && *name_end == '(')
             {
+                bool & seen = suffix == "limit" ? seen_limit : (suffix == "skip" ? seen_skip : seen_sort);
+                if (seen)
+                    throw Exception(ErrorCodes::BAD_ARGUMENTS, "The '.{}' suffix of a query must not be given more than once", suffix);
+                seen = true;
                 pos = findMatchingParenthesis(name_end, statement_end) + 1;
                 continue;
             }

@@ -1057,6 +1057,23 @@ def test_find_limit_zero_means_no_limit(started_cluster):
     assert [doc["id"] for doc in collection.find({"id": {"$gt": 2}}).sort("id", 1).limit(0)] == [3, 4, 5]
     assert [doc["id"] for doc in collection.find({}).sort("id", 1).limit(-2)] == [1, 2]
 
+    # The whole result is returned in the first batch. Without `singleBatch` a `batchSize` only
+    # splits the result into batches, so every document is still returned; with `singleBatch` the
+    # cursor is closed after the first batch, so `batchSize` bounds the result.
+    def find(**options):
+        reply = client["db"].command({"find": "limit_zero", "sort": {"id": 1}, **options})
+        assert reply["cursor"]["id"] == 0
+        return [doc["id"] for doc in reply["cursor"]["firstBatch"]]
+
+    assert find(batchSize=2) == [1, 2, 3, 4, 5]
+    assert find(batchSize=2, singleBatch=True) == [1, 2]
+    assert find(batchSize=4, limit=3, singleBatch=True) == [1, 2, 3]
+    assert find(batchSize=2, limit=3, singleBatch=True) == [1, 2]
+    assert find(singleBatch=True) == [1, 2, 3, 4, 5]
+    for options in [{"batchSize": -1}, {"batchSize": 0, "singleBatch": True}, {"singleBatch": "yes"}]:
+        with pytest.raises(pymongo.errors.OperationFailure):
+            find(**options)
+
 
 def test_current_date_forms(started_cluster):
     """`$currentDate` accepts `true` and `{"$type": "date"}`. `{"$type": "timestamp"}` asks for
@@ -2002,6 +2019,7 @@ def test_list_collections_and_databases_honor_filter_and_name_only(started_clust
     """A `listCollections` and a `listDatabases` carry a `filter` on the `name` and a `nameOnly`
     flag. The filter narrows the listing; one that is not understood is an error rather than an
     unfiltered listing that reports names the client did not ask for."""
+    node = cluster.instances["node"]
     client = make_client()
     database = client["db_listing"]
     for name in ["users", "orders", "user_events"]:
@@ -2054,6 +2072,12 @@ def test_list_collections_and_databases_honor_filter_and_name_only(started_clust
     assert set(databases(filter={"name": "db_listing"})[0].keys()) == {"name", "empty"}
     assert databases(filter={"name": "db_listing"}, nameOnly=True) == [{"name": "db_listing"}]
     assert "db_listing" in client.list_database_names()
+
+    # A ClickHouse database whose name is not a legal Mongo database name cannot be used by any
+    # other command, so it is not listed.
+    node.query("CREATE DATABASE IF NOT EXISTS `db+listing`", password="123")
+    assert "db+listing" not in client.list_database_names()
+    node.query("DROP DATABASE `db+listing`", password="123")
 
     for bad_filter in [{"sizeOnDisk": 0}, {"name": {"$ne": "db_listing"}}, {"name": {"$in": [1]}}]:
         with pytest.raises(pymongo.errors.OperationFailure):

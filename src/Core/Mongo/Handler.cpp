@@ -851,13 +851,22 @@ String CollectionRef::getQualifiedName() const
     return backQuoteIfNeed(database) + "." + backQuoteIfNeed(collection);
 }
 
+bool isValidMongoDatabaseName(const String & database)
+{
+    if (database.empty())
+        return false;
+    for (char symbol : database)
+        if (!isWordCharASCII(symbol) && symbol != '-')
+            return false;
+    return true;
+}
+
 void validateMongoDatabaseName(const String & database, const String & command_name)
 {
     if (database.empty())
         throw Exception(ErrorCodes::BAD_ARGUMENTS, "Empty Mongo database name in the command '{}'", command_name);
-    for (char symbol : database)
-        if (!isWordCharASCII(symbol) && symbol != '-')
-            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Invalid Mongo database name '{}' in the command '{}'", database, command_name);
+    if (!isValidMongoDatabaseName(database))
+        throw Exception(ErrorCodes::BAD_ARGUMENTS, "Invalid Mongo database name '{}' in the command '{}'", database, command_name);
 }
 
 CollectionRef getCollectionRef(const Document & command, const String & command_name)
