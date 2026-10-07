@@ -76,10 +76,10 @@ std::vector<Document> CountHandler::handle(const std::vector<OpMessageSection> &
     }
 
     /// Mongo reads a collection that does not exist as empty rather than raising an error, so
-    /// its `count` is 0. The query is translated first, so that a malformed query is still an
+    /// its `count` is 0, and so is the one of the placeholder of `createCollection`. The query is translated first, so that a malformed query is still an
     /// error.
     Int64 count = 0;
-    if (objectExists(executor, "TABLE", collection.getQualifiedName()))
+    if (collectionHasSchema(collection, executor))
     {
         auto output = executor->execute(fmt::format("SELECT count() FROM ({}) FORMAT TSV", sql_query));
 

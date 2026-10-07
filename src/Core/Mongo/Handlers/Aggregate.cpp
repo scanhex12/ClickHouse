@@ -164,13 +164,14 @@ std::vector<Document> AggregateHandler::handle(const std::vector<OpMessageSectio
 
     /// Mongo reads a collection that does not exist as empty rather than raising an error, the same
     /// way `find`, `count` and `distinct` do here. This applies to every collection the pipeline
-    /// reads: the aggregated one and the ones of its `$unionWith` stages.
+    /// reads: the aggregated one and the ones of its `$unionWith` stages. The placeholder of
+    /// `createCollection` holds no document either, so it is read as empty as well.
     std::map<String, bool> existing_collections;
     auto collection_exists = [&](const String & name)
     {
         auto [it, inserted] = existing_collections.try_emplace(name, false);
         if (inserted)
-            it->second = objectExists(executor, "TABLE", CollectionRef{.database = collection.database, .collection = name}.getQualifiedName());
+            it->second = collectionHasSchema(CollectionRef{.database = collection.database, .collection = name}, executor);
         return it->second;
     };
 
@@ -187,8 +188,8 @@ std::vector<Document> AggregateHandler::handle(const std::vector<OpMessageSectio
         if (reads_other_collections)
             throw Exception(
                 ErrorCodes::NOT_IMPLEMENTED,
-                "The collection '{}' of an 'aggregate' with a '$unionWith' stage does not exist: a missing collection is read as empty, "
-                "but the documents of the union cannot be returned without it",
+                "The collection '{}' of an 'aggregate' with a '$unionWith' stage does not exist or has no documents yet: such a "
+                "collection is read as empty, but the documents of the union cannot be returned without it",
                 collection.getQualifiedName());
 
         return makeEmptyCursorReply(collection);

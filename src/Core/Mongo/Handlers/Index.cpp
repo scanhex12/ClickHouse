@@ -91,11 +91,11 @@ std::vector<Document> IndexHandler::handle(const std::vector<OpMessageSection> &
               * nothing about what a Mongo client can do instead - insert a document that has the
               * field first.
               */
-            if (!objectExists(executor, "TABLE", collection.getQualifiedName()))
+            if (!collectionHasSchema(collection, executor))
                 throw Exception(
                     ErrorCodes::NOT_IMPLEMENTED,
-                    "Can not create an index on the collection '{}.{}', which does not exist: an index is created on the columns of an "
-                    "existing collection, so insert a document first",
+                    "Can not create an index on the collection '{}.{}', which does not exist or has no documents yet: an index is "
+                    "created on the columns of an existing collection, so insert a document first",
                     collection.database,
                     collection.collection);
 

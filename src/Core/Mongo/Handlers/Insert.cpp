@@ -153,6 +153,15 @@ void flattenDocument(
 
         if (it->value.IsObject())
         {
+            /// A nested document is stored as a column per field, so an empty one has no column
+            /// to go to. Flattening it into nothing would store the document as if the field were
+            /// absent, so it is rejected before anything is written.
+            if (it->value.MemberCount() == 0)
+                throw Exception(
+                    ErrorCodes::BAD_ARGUMENTS,
+                    "The field '{}' is an empty embedded document, which is not supported: a nested document is stored as one column "
+                    "per field, so an empty one names no column",
+                    full_name);
             flattenDocument(it->value, full_name, out, allocator, wrapper_types);
             continue;
         }
@@ -252,28 +261,6 @@ std::vector<InsertHandler::DocumentField> inferSchema(const rapidjson::Value & f
     return fields;
 }
 
-/** Tells whether the collection is the placeholder table that `createCollection` leaves behind: a
-  * single `JSON` column named `json`, because an explicitly created collection has no document to
-  * infer a schema from. The first `insert` gives it the schema of the inserted document.
-  *
-  * That column layout is also a perfectly ordinary table a user may have created directly in
-  * ClickHouse, so the layout alone does not authorize the rewrite: the table must additionally
-  * carry the comment `createCollection` puts on the placeholder. A table without that marker is
-  * used as it is, and an inserted document that does not fit it fails on the `INSERT` itself
-  * rather than having its columns silently retyped.
-  */
-bool isPlaceholderCollection(const CollectionRef & collection, std::shared_ptr<QueryExecutor> executor)
-{
-    auto answer = executor->execute(fmt::format(
-        "SELECT (SELECT count() = 1 AND countIf(name = 'json' AND type = 'JSON') = 1 FROM system.columns "
-        "WHERE database = {0} AND table = {1}) "
-        "AND (SELECT countIf(comment = {2}) = 1 FROM system.tables WHERE database = {0} AND name = {1}) FORMAT TSV",
-        quoteString(collection.database),
-        quoteString(collection.collection),
-        quoteString(PLACEHOLDER_COLLECTION_COMMENT)));
-    return answer.starts_with('1');
-}
-
 }
 
 void InsertHandler::createDatabase(const CollectionRef & collection, std::shared_ptr<QueryExecutor> executor)
@@ -285,11 +272,20 @@ void InsertHandler::createTable(
     const CollectionRef & collection, std::shared_ptr<QueryExecutor> executor, const std::vector<DocumentField> & fields)
 {
     if (fields.empty())
+    {
+        /// An empty document is a valid one: in a collection that already has its columns it is a
+        /// row in which every field is absent, i.e. has the default value of its column, the same
+        /// as any field a document does not have. Only a new collection cannot get its columns
+        /// from it.
+        if (collectionHasSchema(collection, executor))
+            return;
         throw Exception(
             ErrorCodes::BAD_ARGUMENTS,
-            "Can not create the collection '{}.{}': the first inserted document has no fields that map onto columns",
+            "Can not create the collection '{}.{}': its columns are inferred from the first inserted document, which has no fields "
+            "that map onto columns",
             collection.database,
             collection.collection);
+    }
 
     if (isPlaceholderCollection(collection, executor))
     {
@@ -371,7 +367,7 @@ std::vector<Document> InsertHandler::handle(const std::vector<OpMessageSection> 
     auto & allocator = allocator_owner.GetAllocator();
 
     WriteBufferFromOwnString data;
-    std::vector<DocumentField> schema;
+    bool table_prepared = false;
 
     for (const auto & doc : to_insert)
     {
@@ -381,11 +377,11 @@ std::vector<Document> InsertHandler::handle(const std::vector<OpMessageSection> 
 
         /// The schema comes from the first document only, as in Mongo a collection has no
         /// schema of its own.
-        if (schema.empty())
+        if (!table_prepared)
         {
-            schema = inferSchema(flattened, wrapper_types);
             createDatabase(collection, executor);
-            createTable(collection, executor, schema);
+            createTable(collection, executor, inferSchema(flattened, wrapper_types));
+            table_prepared = true;
         }
 
         rapidjson::StringBuffer buffer;

@@ -107,9 +107,9 @@ std::vector<Document> DistinctHandler::handle(const std::vector<OpMessageSection
         sql_query);
 
     /// Mongo reads a collection that does not exist as empty rather than raising an error, so
-    /// its distinct values are `[]`. The query is translated first, so that a malformed query
+    /// its distinct values are `[]`, and so are the ones of the placeholder of `createCollection`. The query is translated first, so that a malformed query
     /// is still an error.
-    if (!objectExists(executor, "TABLE", collection.getQualifiedName()))
+    if (!collectionHasSchema(collection, executor))
     {
         bson_t * empty_reply = bson_new();
 

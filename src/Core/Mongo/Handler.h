@@ -124,6 +124,23 @@ std::vector<Document> makeEmptyCursorReply(const CollectionRef & collection);
   */
 bool objectExists(std::shared_ptr<QueryExecutor> executor, const String & object_kind, const String & name);
 
+/** Whether the collection is the placeholder table that `createCollection` leaves behind: a
+  * single `JSON` column named `json`, because an explicitly created collection has no document to
+  * infer a schema from. The first `insert` gives it the schema of the inserted document.
+  *
+  * That column layout is also a perfectly ordinary table a user may have created directly in
+  * ClickHouse, so the layout alone does not identify the placeholder: the table must additionally
+  * carry the comment `createCollection` puts on it, see `PLACEHOLDER_COLLECTION_COMMENT`.
+  */
+bool isPlaceholderCollection(const CollectionRef & collection, std::shared_ptr<QueryExecutor> executor);
+
+/** Whether the collection exists and has the columns of its documents, i.e. it is neither absent
+  * nor the placeholder of `createCollection`. A collection that does not have them holds no
+  * document, so the commands that read or modify documents treat it as empty: a filter over it
+  * would otherwise name columns that do not exist yet and fail instead of matching nothing.
+  */
+bool collectionHasSchema(const CollectionRef & collection, std::shared_ptr<QueryExecutor> executor);
+
 /** The `filter` of a `listCollections` / `listDatabases` command as a predicate over the names it
   * lists. The one field a filter can name here is `name`, matched by equality, `$eq`, `$in` or a
   * regular expression (`$regex` with `$options`, or `$regularExpression`). Any other shape is

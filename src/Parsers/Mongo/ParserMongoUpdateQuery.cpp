@@ -305,9 +305,36 @@ ASTPtr parseMongoUpdateStatement(const rapidjson::Value & update)
 
 bool ParserMongoUpdateQuery::parseImpl(ASTPtr & node)
 {
-    /// `updateMany` is parsed from a two element array: the filter and the update statement.
-    if (!data.IsArray() || data.Size() != 2)
+    /// `updateMany` is parsed from an array of the filter, the update statement and optionally the
+    /// options document.
+    if (!data.IsArray() || data.Size() < 2 || data.Size() > 3)
         return false;
+
+    /** The options are standard Mongo syntax, so they are an error of their own rather than the
+      * generic one of a query that does not parse. None of them is implemented: `upsert: true`
+      * would insert a document that is not written, and `arrayFilters`, `collation`, `hint` or
+      * `let` would change which documents and elements are updated, so the only option accepted
+      * is an `upsert` that is false - the same as the `update` command of the wire protocol.
+      */
+    if (data.Size() == 3)
+    {
+        const auto & options = data[2];
+        if (!options.IsObject())
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "The options of 'updateMany' must be a document");
+        for (auto it = options.MemberBegin(); it != options.MemberEnd(); ++it)
+        {
+            auto name = stringView(it->name);
+            if (name == "upsert")
+            {
+                if (!it->value.IsBool())
+                    throw Exception(ErrorCodes::BAD_ARGUMENTS, "The 'upsert' option of 'updateMany' must be a boolean");
+                if (it->value.GetBool())
+                    throw Exception(ErrorCodes::NOT_IMPLEMENTED, "The 'upsert: true' option of 'updateMany' is not supported");
+            }
+            else
+                throw Exception(ErrorCodes::NOT_IMPLEMENTED, "The option '{}' of 'updateMany' is not supported", name);
+        }
+    }
 
     auto command = make_intrusive<ASTAlterCommand>();
     command->type = ASTAlterCommand::UPDATE;

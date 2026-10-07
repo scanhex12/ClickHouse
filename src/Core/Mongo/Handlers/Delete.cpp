@@ -68,8 +68,9 @@ std::vector<Document> DeleteHandler::handle(const std::vector<OpMessageSection> 
     };
 
     /// A delete from a collection that does not exist matches no document, which Mongo reports as
-    /// a delete of zero documents rather than an error.
-    const bool collection_exists = objectExists(executor, "TABLE", collection.getQualifiedName());
+    /// a delete of zero documents rather than an error. So does a delete from the placeholder of
+    /// `createCollection`, which has no columns for the filter to name yet.
+    const bool collection_exists = collectionHasSchema(collection, executor);
 
     Int64 deleted = 0;
     for (const auto & delete_spec : delete_specs)

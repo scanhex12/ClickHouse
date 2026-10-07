@@ -53,5 +53,9 @@ Code: 36. The source and the target field of '$rename' must differ
 Code: 36. The source and the target field of '$rename' must be named
 Code: 36. The update statement writes the field 'id' more than once
 Code: 36. The update statement writes the field 'other' more than once
+Code: 48. The 'upsert: true' option of 'updateMany' is not supported
+Code: 36. The 'upsert' option of 'updateMany' must be a boolean
+Code: 48. The option 'arrayFilters' of 'updateMany' is not supported
+Code: 36. The options of 'updateMany' must be a document
 -- the server is still healthy
 1	alpha		['red']

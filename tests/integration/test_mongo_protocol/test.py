@@ -22,12 +22,16 @@ cluster.add_instance(
         "configs/mongo.xml",
         "configs/log.xml",
         "configs/users.xml",
+        "configs/ssl_conf.xml",
+        "configs/server.crt",
+        "configs/server.key",
     ],
     user_configs=["configs/default_password.xml"],
     env_variables={"UBSAN_OPTIONS": "print_stacktrace=1"},
 )
 
 server_port = 27017
+secure_server_port = 27018
 
 OP_MSG = 2013
 
@@ -348,6 +352,63 @@ def test_create_collection(started_cluster):
 
     db.drop_collection("explicit")
     assert "explicit" not in db.list_collection_names()
+
+
+def test_created_collection_without_documents_reads_as_empty(started_cluster):
+    """Until its first insert, a collection created explicitly has no columns of its documents, so
+    a filter naming a field matches nothing instead of failing on an unknown column."""
+    client = make_client()
+    db = client["db_create"]
+    db.drop_collection("placeholder")
+    db.create_collection("placeholder")
+
+    collection = db["placeholder"]
+    assert list(collection.find({"a": 1})) == []
+    assert collection.count_documents({"a": 1}) == 0
+    assert collection.distinct("a", {"a": 1}) == []
+    assert collection.update_many({}, {"$set": {"a": 1}}).matched_count == 0
+    assert collection.delete_many({"a": 1}).deleted_count == 0
+
+    # The placeholder is still there, and the first insert still gives it its columns.
+    collection.insert_one({"a": 1})
+    assert list(collection.find({"a": 1})) == [{"a": 1}]
+    db.drop_collection("placeholder")
+
+
+def test_empty_documents(started_cluster):
+    client = make_client()
+    collection = client["db"]["empty_documents"]
+    collection.drop()
+
+    # A new collection gets its columns from the first document, and an empty one has none.
+    with pytest.raises(pymongo.errors.OperationFailure, match="no fields that map onto columns"):
+        collection.insert_one({})
+
+    # An empty nested document has no column to go to, so it is rejected rather than dropped.
+    with pytest.raises(pymongo.errors.OperationFailure, match="empty embedded document"):
+        collection.insert_one({"id": 1, "profile": {}})
+
+    # In a collection that has its columns, an empty document is a row of default values.
+    collection.insert_one({"id": 1, "name": "x"})
+    collection.insert_one({})
+    found = sorted((doc for doc in collection.find({})), key=lambda x: x["id"])
+    assert found == [{"id": 0, "name": ""}, {"id": 1, "name": "x"}]
+    collection.drop()
+
+
+def test_secure_port(started_cluster):
+    """The `mongo_port_secure` speaks TLS from the first byte, as a client with `tls=true` expects."""
+    node = cluster.instances["node"]
+    client = pymongo.MongoClient(
+        f"mongodb://default:123@{node.ip_address}:{secure_server_port}/default?authMechanism=PLAIN",
+        tls=True,
+        tlsAllowInvalidCertificates=True,
+    )
+    collection = client["db"]["over_tls"]
+    collection.drop()
+    collection.insert_one({"id": 1, "name": "secure"})
+    assert list(collection.find({"id": 1})) == [{"id": 1, "name": "secure"}]
+    collection.drop()
 
 
 def test_increment_update(started_cluster):
@@ -989,7 +1050,7 @@ def test_insert_arrays_of_bson_scalars(started_cluster):
         ]
     )
 
-    found = list(collection.find({}, {"_id": 0}))
+    found = list(collection.find({}))
     assert found == [
         {
             "id": 1,
@@ -1004,7 +1065,7 @@ def test_insert_arrays_of_bson_scalars(started_cluster):
     events = client["db"]["wrapper_array_subdocs"]
     events.drop()
     events.insert_many([{"id": 1, "events": [{"name": "start", "at": datetime.datetime(2020, 1, 1, 0, 0, 0)}]}])
-    found = list(events.find({}, {"_id": 0}))
+    found = list(events.find({}))
     assert found[0]["id"] == 1
     assert found[0]["events"][0]["name"] == "start"
 
@@ -1827,11 +1888,13 @@ def test_create_index_needs_the_field_to_be_a_column(started_cluster):
         collection.create_index("email")
     assert "does not exist" in str(error.value)
 
-    # Created explicitly, it holds whole documents and has no `email` column yet.
+    # Created explicitly, it has no document and hence no columns yet - not even one named `json`,
+    # the column of the placeholder table, which is not a field of any document.
     database.create_collection("index_pre_schema")
-    with pytest.raises(pymongo.errors.OperationFailure) as error:
-        collection.create_index("email")
-    assert "not a column" in str(error.value)
+    for field in ["email", "json"]:
+        with pytest.raises(pymongo.errors.OperationFailure) as error:
+            collection.create_index(field)
+        assert "has no documents yet" in str(error.value)
 
     # A field the documents do have can be indexed.
     collection.insert_one({"email": "a@b.c"})

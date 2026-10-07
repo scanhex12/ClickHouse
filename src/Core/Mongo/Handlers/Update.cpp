@@ -175,8 +175,9 @@ std::vector<Document> UpdateHandler::handle(const std::vector<OpMessageSection> 
     };
 
     /// An update of a collection that does not exist matches no document, which Mongo reports as
-    /// an update of zero documents rather than an error.
-    const bool collection_exists = objectExists(executor, "TABLE", collection.getQualifiedName());
+    /// an update of zero documents rather than an error. So does an update of the placeholder of
+    /// `createCollection`, which has no columns for the filter to name yet.
+    const bool collection_exists = collectionHasSchema(collection, executor);
 
     std::vector<String> columns;
     if (collection_exists)

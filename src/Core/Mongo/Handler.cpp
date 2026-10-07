@@ -904,6 +904,23 @@ bool objectExists(std::shared_ptr<QueryExecutor> executor, const String & object
     return !output.empty() && output[0] == '1';
 }
 
+bool isPlaceholderCollection(const CollectionRef & collection, std::shared_ptr<QueryExecutor> executor)
+{
+    auto answer = executor->execute(fmt::format(
+        "SELECT (SELECT count() = 1 AND countIf(name = 'json' AND type = 'JSON') = 1 FROM system.columns "
+        "WHERE database = {0} AND table = {1}) "
+        "AND (SELECT countIf(comment = {2}) = 1 FROM system.tables WHERE database = {0} AND name = {1}) FORMAT TSV",
+        quoteString(collection.database),
+        quoteString(collection.collection),
+        quoteString(PLACEHOLDER_COLLECTION_COMMENT)));
+    return answer.starts_with('1');
+}
+
+bool collectionHasSchema(const CollectionRef & collection, std::shared_ptr<QueryExecutor> executor)
+{
+    return objectExists(executor, "TABLE", collection.getQualifiedName()) && !isPlaceholderCollection(collection, executor);
+}
+
 std::optional<bool> getBoolOption(const rapidjson::Value & json, const char * name, const char * command)
 {
     auto it = json.FindMember(name);
