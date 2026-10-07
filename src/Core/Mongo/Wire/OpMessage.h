@@ -27,6 +27,12 @@ struct OpMessageSection : public FrontMessage, BackendMessage
 
 struct OpMessage : public virtual FrontMessage, BackendMessage
 {
+    /// The flag bits of `OP_MSG`. The low 16 bits are required: a receiver must reject a message
+    /// with a required bit it does not know. The high 16 bits are optional and may be ignored.
+    static constexpr UInt32 CHECKSUM_PRESENT = 1u << 0;
+    static constexpr UInt32 MORE_TO_COME = 1u << 1;
+    static constexpr UInt32 REQUIRED_FLAGS_MASK = 0xFFFFu;
+
     Header header;
     UInt32 flags = 0;
     std::vector<OpMessageSection> sections;

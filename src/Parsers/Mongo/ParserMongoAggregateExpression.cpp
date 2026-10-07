@@ -617,15 +617,34 @@ ASTPtr parseOperator(std::string_view name, const rapidjson::Value & argument)
     if (name == "$dateFromString")
     {
         auto text = parseMongoAggregateExpression(requireMember(argument, "dateString", name));
+        for (const auto & member : argument.GetObject())
+        {
+            auto member_name = stringView(member.name);
+            if (member_name == "onError" || member_name == "onNull")
+                throw Exception(ErrorCodes::NOT_IMPLEMENTED, "The '{}' of '{}' is not supported", member_name, name);
+            if (member_name != "dateString" && member_name != "format" && member_name != "timezone")
+                throw Exception(ErrorCodes::BAD_ARGUMENTS, "Unknown argument '{}' of '{}'", member_name, name);
+        }
+
+        /// A text without an offset is read in `timezone`, or in UTC without it: without the time
+        /// zone `parseDateTime` would read the text in the session's one, while every other date of
+        /// this dialect - `$date` and `$toDate` - is UTC. The result is converted
+        /// back to UTC, so that it is printed the same way as the other dates.
+        ASTPtr timezone;
+        if (auto timezone_it = argument.FindMember("timezone"); timezone_it != argument.MemberEnd())
+            timezone = parseMongoAggregateExpression(timezone_it->value);
+        else
+            timezone = makeLiteral(Field(String("UTC")));
+
+        ASTPtr parsed;
         if (auto format_it = argument.FindMember("format"); format_it != argument.MemberEnd())
-            /// Without the time zone `parseDateTime` reads the text in the session's one, while
-            /// every other date of this dialect - `$date`, `$toDate` and the branch below - is UTC.
-            return makeASTFunction(
-                "parseDateTime",
-                text,
-                parseMongoAggregateExpression(format_it->value),
-                makeLiteral(Field(String("UTC"))));
-        return makeASTFunction("parseDateTime64BestEffort", text, makeLiteral(Field(UInt64(3))), makeLiteral(Field(String("UTC"))));
+            parsed = makeASTFunction("parseDateTime", text, parseMongoAggregateExpression(format_it->value), timezone);
+        else
+            parsed = makeASTFunction("parseDateTime64BestEffort", text, makeLiteral(Field(UInt64(3))), timezone);
+
+        if (argument.HasMember("timezone"))
+            parsed = makeASTFunction("toTimeZone", parsed, makeLiteral(Field(String("UTC"))));
+        return parsed;
     }
 
     if (name == "$dateAdd" || name == "$dateSubtract")

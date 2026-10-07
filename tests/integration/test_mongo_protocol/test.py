@@ -66,10 +66,10 @@ def make_client(user="default", password="123", database="default"):
     )
 
 
-def encode_op_msg(command, request_id=1):
+def encode_op_msg(command, request_id=1, flags=0):
     """Encodes a command document as a single OP_MSG frame with one body section."""
     body = b"\x00" + bson.encode(command)
-    payload = struct.pack("<I", 0) + body  # flag bits, then the sections
+    payload = struct.pack("<I", flags) + body  # flag bits, then the sections
     length = 16 + len(payload)
     header = struct.pack("<iiii", length, request_id, 0, OP_MSG)
     return header + payload
@@ -2158,5 +2158,76 @@ def test_insert_batch_is_all_or_nothing(started_cluster):
     with pytest.raises(pymongo.errors.PyMongoError):
         collection.insert_many([{"id": 4, "name": "d"}], ordered=False)
     assert [doc["id"] for doc in collection.find({})] == [0]
+
+    collection.drop()
+
+
+def test_more_to_come_gets_no_reply(started_cluster):
+    """A message with the `moreToCome` flag is executed but not answered: the client does not wait
+    for a reply and sends the next message right away, so a reply would be read as the answer to
+    that next message."""
+    client = make_client()
+    collection = client["db"]["more_to_come"]
+    collection.drop()
+    collection.insert_one({"id": 0})
+
+    more_to_come = 1 << 1
+    sock = connect_raw()
+    try:
+        authenticate_raw(sock)
+        sock.sendall(
+            encode_op_msg(
+                {"insert": "more_to_come", "documents": [{"id": 1}], "$db": "db"}, request_id=1, flags=more_to_come
+            )
+            + encode_op_msg({"find": "more_to_come", "filter": {"id": 1}, "$db": "db"}, request_id=2)
+        )
+        reply = read_op_msg(sock)
+        assert reply["ok"] == 1.0, reply
+        assert [doc["id"] for doc in reply["cursor"]["firstBatch"]] == [1]
+    finally:
+        sock.close()
+
+    collection.drop()
+
+
+def test_unset_and_rename_of_a_subdocument(started_cluster):
+    """A nested document is stored as one column per leaf, so `$unset` and `$rename` of the parent
+    path apply to all of its leaves, the same way `$set` of a subdocument does."""
+    client = make_client()
+    collection = client["db"]["subdocument_unset_rename"]
+
+    collection.drop()
+    collection.insert_many(
+        [
+            {"id": 1, "profile": {"name": "alpha", "age": 30}, "user": {"name": "", "age": 0}},
+            {"id": 2, "profile": {"name": "beta", "age": 40}, "user": {"name": "", "age": 0}},
+        ]
+    )
+
+    collection.update_many({"id": 1}, {"$rename": {"profile": "user"}})
+    assert wait_for(lambda: collection.find_one({"id": 1})["user"] == {"name": "alpha", "age": 30})
+    assert collection.find_one({"id": 1})["profile"] == {"name": "", "age": 0}
+
+    collection.update_many({"id": 2}, {"$unset": {"profile": ""}})
+    assert wait_for(lambda: collection.find_one({"id": 2})["profile"] == {"name": "", "age": 0})
+
+    collection.drop()
+
+
+def test_aggregate_cursor_must_be_well_formed(started_cluster):
+    """The whole result of an `aggregate` is returned in its first batch, so `cursor.batchSize` only
+    says how it is split, but a malformed `cursor` is still an error."""
+    client = make_client()
+    database = client["db"]
+    collection = database["aggregate_cursor"]
+    collection.drop()
+    collection.insert_many([{"id": 1}, {"id": 2}])
+
+    reply = database.command({"aggregate": "aggregate_cursor", "pipeline": [{"$sort": {"id": 1}}], "cursor": {"batchSize": 1}})
+    assert [doc["id"] for doc in reply["cursor"]["firstBatch"]] == [1, 2]
+
+    for cursor in [{"batchSize": -1}, {"batchSize": 1.5}, 1]:
+        with pytest.raises(pymongo.errors.OperationFailure):
+            database.command({"aggregate": "aggregate_cursor", "pipeline": [], "cursor": cursor})
 
     collection.drop()

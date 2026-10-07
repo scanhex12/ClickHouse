@@ -111,6 +111,18 @@ std::vector<Document> AggregateHandler::handle(const std::vector<OpMessageSectio
     if (pipeline_it == json_representation.MemberEnd() || !pipeline_it->value.IsArray())
         throw Exception(ErrorCodes::BAD_ARGUMENTS, "The 'pipeline' of an 'aggregate' command must be an array of stages");
 
+    /// The reply always holds the whole result in its first batch and closes the cursor (see
+    /// `executeSelectIntoCursor`), so `cursor.batchSize` only says how the result is split into
+    /// batches, the same as the `batchSize` of a `find` without `singleBatch`. It is still validated.
+    if (auto cursor_it = json_representation.FindMember("cursor"); cursor_it != json_representation.MemberEnd())
+    {
+        if (!cursor_it->value.IsObject())
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "The 'cursor' of an 'aggregate' command must be a document");
+        auto batch_size = getWholeNumberOption(cursor_it->value, "batchSize", "aggregate");
+        if (batch_size && *batch_size < 0)
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "The 'cursor.batchSize' of an 'aggregate' command must not be negative");
+    }
+
     /// A `$match` stage uses the query syntax and is normalized into dotted keys the way the
     /// filter of a `find` is; the rest of the pipeline is left as written, because there a stage
     /// names a nested field with an explicit `a.b` path already, and a nested document is a value

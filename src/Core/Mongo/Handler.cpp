@@ -1108,6 +1108,12 @@ void handle(
                 tryLogCurrentException("MongoProtocol", "Failed to execute an OP_MSG command");
                 response_doc = makeErrorResponse();
             }
+
+            /// With `moreToCome` the client does not wait for a reply and may send the next
+            /// message right away, so a reply would be read as the answer to a later request.
+            if (request.flags & OpMessage::MORE_TO_COME)
+                break;
+
             /// The reply carries no flags of its own. Echoing the flags of the request would
             /// promise the client a checksum we do not write, or a message we do not send.
             auto response = OpMessage(/* flags_= */ 0, /* kind_= */ 0, response_doc);

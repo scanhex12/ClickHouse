@@ -8,6 +8,7 @@
 namespace DB::ErrorCodes
 {
 extern const int BAD_ARGUMENTS;
+extern const int NOT_IMPLEMENTED;
 }
 
 namespace DB::MongoProtocol
@@ -100,9 +101,15 @@ void OpMessage::deserialize(ReadBuffer & in)
 {
     readBinaryLittleEndian(flags, in);
 
+    /// The checksum would be read as one more section, so a message that carries one is rejected
+    /// rather than misparsed.
+    if (flags & CHECKSUM_PRESENT)
+        throw Exception(ErrorCodes::NOT_IMPLEMENTED, "Mongo messages with a checksum are not supported");
+    if (UInt32 unknown_required_flags = flags & REQUIRED_FLAGS_MASK & ~MORE_TO_COME)
+        throw Exception(ErrorCodes::BAD_ARGUMENTS, "Unknown required flags {} of a Mongo message", unknown_required_flags);
+
     /// `in` holds exactly the payload of one message, so reading until it is exhausted
     /// can neither consume a part of the next message nor stop in the middle of this one.
-    /// The optional checksum at the end of the message is not supported.
     while (!in.eof())
     {
         OpMessageSection section;
