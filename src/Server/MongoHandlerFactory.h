@@ -16,6 +16,8 @@ class MongoHandlerFactory : public TCPServerConnectionFactory
 private:
     IServer & server;
     LoggerPtr log;
+    /// Whether the connections come from a `SecureServerSocket`, i.e. are TLS from the start.
+    bool secure;
     ProfileEvents::Event read_event;
     ProfileEvents::Event write_event;
 
@@ -24,6 +26,7 @@ private:
 public:
     explicit MongoHandlerFactory(
         IServer & server_,
+        bool secure_,
         const ProfileEvents::Event & read_event_ = ProfileEvents::end(),
         const ProfileEvents::Event & write_event_ = ProfileEvents::end());
 

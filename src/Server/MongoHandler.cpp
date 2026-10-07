@@ -9,6 +9,7 @@
 #include <IO/ReadHelpers.h>
 #include <IO/WriteBuffer.h>
 #include <IO/WriteBufferFromPocoSocket.h>
+#include <Core/Settings.h>
 #include <Interpreters/Context.h>
 #include <Server/TCPServer.h>
 #include <base/scope_guard.h>
@@ -21,6 +22,12 @@
 
 namespace DB
 {
+
+namespace Setting
+{
+    extern const SettingsSeconds receive_timeout;
+    extern const SettingsSeconds send_timeout;
+}
 
 MongoHandler::MongoHandler(
     const Poco::Net::StreamSocket & socket_,
@@ -56,6 +63,15 @@ void MongoHandler::run()
     SCOPE_EXIT({ session.reset(); });
 
     session->setClientConnectionId(connection_id);
+
+    /** The loop below waits for the next message with `poll`, which has a timeout of its own, so
+      * an idle connection is kept open. Once a message has started, its header and payload are read
+      * with blocking reads, and the receive timeout bounds them: without it, a client that sends a
+      * part of a message and then stalls would hold this thread forever, before authentication.
+      */
+    const Settings & settings = server.context()->getSettingsRef();
+    socket().setReceiveTimeout(settings[Setting::receive_timeout]);
+    socket().setSendTimeout(settings[Setting::send_timeout]);
 
     try
     {
