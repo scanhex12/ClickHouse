@@ -2,6 +2,7 @@
 
 #include <string_view>
 #include <unordered_set>
+#include <vector>
 
 #include <rapidjson/document.h>
 
@@ -242,6 +243,35 @@ void parseUpdateOperator(std::string_view name, const rapidjson::Value & argumen
     }
 }
 
+/** Two operators of the same statement that write the same field are a conflict in Mongo, and
+  * a mutation can only assign a column once, so the field is named here rather than leaving
+  * the generic complaint of `ALTER TABLE ... UPDATE` to explain it.
+  */
+void checkFieldsWrittenOnce(const std::vector<ASTPtr> & assignments)
+{
+    std::unordered_set<std::string> written;
+    for (const auto & assignment : assignments)
+    {
+        const auto & column = assignment->as<const ASTAssignment &>().column_name;
+        if (!written.insert(column).second)
+            throw Exception(
+                ErrorCodes::BAD_ARGUMENTS, "The update statement writes the field '{}' more than once", column);
+    }
+}
+
+/// Whether `expression` is the default value of the column `column`, as `makeDefaultValue` builds it.
+bool isDefaultValueOf(const ASTPtr & expression, const std::string & column)
+{
+    const auto * function = expression->as<ASTFunction>();
+    if (!function || function->name != "defaultValueOfTypeName" || !function->arguments || function->arguments->children.size() != 1)
+        return false;
+    const auto * type_name = function->arguments->children[0]->as<ASTFunction>();
+    if (!type_name || type_name->name != "toTypeName" || !type_name->arguments || type_name->arguments->children.size() != 1)
+        return false;
+    const auto * identifier = type_name->arguments->children[0]->as<ASTIdentifier>();
+    return identifier && identifier->name() == column;
+}
+
 void flattenAssignedDocument(const std::string & prefix, const rapidjson::Value & document, std::vector<ASTPtr> & assignments)
 {
     if (document.MemberCount() == 0)
@@ -284,23 +314,79 @@ ASTPtr parseMongoUpdateStatement(const rapidjson::Value & update)
         parseUpdateOperator(name, it->value, assignments);
     }
 
-    /** Two operators of the same statement that write the same field are a conflict in Mongo, and
-      * a mutation can only assign a column once, so the field is named here rather than leaving
-      * the generic complaint of `ALTER TABLE ... UPDATE` to explain it.
-      */
-    std::unordered_set<std::string> written;
-    for (const auto & assignment : assignments)
-    {
-        const auto & column = assignment->as<const ASTAssignment &>().column_name;
-        if (!written.insert(column).second)
-            throw Exception(
-                ErrorCodes::BAD_ARGUMENTS, "The update statement writes the field '{}' more than once", column);
-    }
+    checkFieldsWrittenOnce(assignments);
 
     auto expression_list = make_intrusive<ASTExpressionList>();
     for (auto & assignment : assignments)
         expression_list->children.push_back(std::move(assignment));
     return expression_list;
+}
+
+void expandMongoSubtreeAssignments(ASTPtr & ast, const std::vector<std::string> & columns)
+{
+    auto * alter = ast ? ast->as<ASTAlterQuery>() : nullptr;
+    if (!alter || !alter->command_list)
+        return;
+
+    const std::unordered_set<std::string_view> column_set(columns.begin(), columns.end());
+    /// The leaves of a path that is not a column itself, with the suffix that follows the path.
+    auto leaves = [&](const std::string & path)
+    {
+        std::vector<std::string> suffixes;
+        if (path.empty() || column_set.contains(path))
+            return suffixes;
+        const std::string prefix = path + ".";
+        for (const auto & column : columns)
+            if (column.starts_with(prefix))
+                suffixes.push_back(column.substr(path.size()));
+        return suffixes;
+    };
+
+    for (const auto & child : alter->command_list->children)
+    {
+        auto * command = child->as<ASTAlterCommand>();
+        if (!command || command->type != ASTAlterCommand::UPDATE || !command->update_assignments)
+            continue;
+
+        bool expanded_any = false;
+        std::vector<ASTPtr> expanded;
+        for (const auto & child_assignment : command->update_assignments->children)
+        {
+            const auto & assignment = child_assignment->as<const ASTAssignment &>();
+            const auto & expression = assignment.children.at(0);
+
+            /// `$unset`, and the source of `$rename`, write the default of the field.
+            if (isDefaultValueOf(expression, assignment.column_name))
+            {
+                if (auto suffixes = leaves(assignment.column_name); !suffixes.empty())
+                {
+                    for (const auto & suffix : suffixes)
+                        expanded.push_back(makeAssignment(assignment.column_name + suffix, makeDefaultValue(assignment.column_name + suffix)));
+                    expanded_any = true;
+                    continue;
+                }
+            }
+            /// The target of `$rename` is the only assignment whose value is a bare field.
+            else if (const auto * source = expression->as<ASTIdentifier>())
+            {
+                if (auto suffixes = leaves(source->name()); !suffixes.empty())
+                {
+                    for (const auto & suffix : suffixes)
+                        expanded.push_back(makeAssignment(assignment.column_name + suffix, make_intrusive<ASTIdentifier>(source->name() + suffix)));
+                    expanded_any = true;
+                    continue;
+                }
+            }
+            expanded.push_back(child_assignment);
+        }
+
+        if (!expanded_any)
+            continue;
+
+        /// A leaf can now be written twice, e.g. by `$unset` of `profile` and `$set` of `profile.name`.
+        checkFieldsWrittenOnce(expanded);
+        command->update_assignments->children.assign(expanded.begin(), expanded.end());
+    }
 }
 
 bool ParserMongoUpdateQuery::parseImpl(ASTPtr & node)

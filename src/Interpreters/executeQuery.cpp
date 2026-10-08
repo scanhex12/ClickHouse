@@ -69,6 +69,7 @@
 
 #include <Formats/FormatFactory.h>
 #include <Storages/StorageInput.h>
+#include <Storages/StorageInMemoryMetadata.h>
 
 #include <Access/ContextAccess.h>
 #include <Access/EnabledQuota.h>
@@ -115,6 +116,7 @@
 #include <Core/SettingsEnums.h>
 #if USE_RAPIDJSON
 #include <Parsers/Mongo/ParserMongoQuery.h>
+#include <Parsers/Mongo/ParserMongoUpdateQuery.h>
 #include <Parsers/Mongo/parseMongoQuery.h>
 #endif
 #include <Core/SettingsSecrets.h>
@@ -2441,6 +2443,22 @@ static BlockIO executeQueryImpl(
                         "Support for the MongoDB dialect is disabled (turn on setting 'allow_experimental_mongo_dialect')");
                 Mongo::ParserMongoQuery parser(max_query_size, settings[Setting::max_parser_depth], settings[Setting::max_parser_backtracks]);
                 out_ast = parseMongoQuery(parser, begin, end, "", max_query_size, settings[Setting::max_parser_depth], settings[Setting::max_parser_backtracks]);
+
+                /// `$unset` and `$rename` of a subdocument name only its path, and the parser does
+                /// not know the columns it is stored as, see `expandMongoSubtreeAssignments`. A
+                /// collection that does not exist is left to the interpreter to report.
+                if (const auto * alter = out_ast->as<ASTAlterQuery>())
+                {
+                    const String database = alter->getDatabase().empty() ? context->getCurrentDatabase() : alter->getDatabase();
+                    if (auto storage = DatabaseCatalog::instance().tryGetTable(StorageID(database, alter->getTable()), context))
+                    {
+                        auto metadata = storage->getInMemoryMetadataPtr(context, /* bypass_metadata_cache = */ false);
+                        std::vector<String> column_names;
+                        for (const auto & column : metadata->getColumns())
+                            column_names.push_back(column.name);
+                        Mongo::expandMongoSubtreeAssignments(out_ast, column_names);
+                    }
+                }
 #else
                 /// A build without rapidjson must not strand a session whose dialect was set to
                 /// `mongo` either: a `SET` is plain SQL and needs nothing of the Mongo parser.
