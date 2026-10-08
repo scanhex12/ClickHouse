@@ -59,7 +59,7 @@ void MongoHandler::run()
 {
     setThreadName(ThreadName::MONGO_HANDLER);
 
-    session = std::make_unique<Session>(server.context(), ClientInfo::Interface::MONGO);
+    session = std::make_unique<Session>(server.context(), ClientInfo::Interface::MONGO, ssl_enabled);
     SCOPE_EXIT({ session.reset(); });
 
     session->setClientConnectionId(connection_id);

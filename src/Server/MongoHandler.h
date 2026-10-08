@@ -42,7 +42,7 @@ private:
     IServer & server;
     TCPServer & tcp_server;
     std::unique_ptr<Session> session;
-    [[maybe_unused]] bool ssl_enabled = false;
+    bool ssl_enabled = false;
     Int32 connection_id = 0;
 
     std::shared_ptr<ReadBufferFromPocoSocket> in;
