@@ -127,12 +127,11 @@ std::vector<Document> AggregateHandler::handle(const std::vector<OpMessageSectio
     /// filter of a `find` is; the rest of the pipeline is left as written, because there a stage
     /// names a nested field with an explicit `a.b` path already, and a nested document is a value
     /// rather than a path.
-    /// The database is passed to the parser separately, so that a collection named in the query
-    /// text as `db.<collection>` keeps the text independent of the database name, which may itself
-    /// be `db`.
+    /// The database and the collection are passed to the parser separately, so the text names
+    /// neither of them, see `MONGO_DIALECT_PLACEHOLDER_NAMESPACE`.
     auto translate = [&](const rapidjson::Value & pipeline)
     {
-        auto mongo_dialect_query = fmt::format("db.{}.aggregate({})", collection.collection, serializePipeline(pipeline));
+        auto mongo_dialect_query = fmt::format("{}.aggregate({})", MONGO_DIALECT_PLACEHOLDER_NAMESPACE, serializePipeline(pipeline));
 
         auto parser = Mongo::ParserMongoQuery(10000, 10000, 10000);
         auto ast = Mongo::parseMongoQuery(

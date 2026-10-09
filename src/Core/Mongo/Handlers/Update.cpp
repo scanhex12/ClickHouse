@@ -1,6 +1,8 @@
 #include <Core/Mongo/Handler.h>
 #include <Core/Mongo/Handlers/HandlerRegistry.h>
 #include <Core/Mongo/Handlers/Update.h>
+#include <Parsers/ASTAlterQuery.h>
+#include <Parsers/ASTAssignment.h>
 #include <Parsers/IdentifierQuotingStyle.h>
 #include <Parsers/Mongo/ParserMongoFilter.h>
 #include <Parsers/Mongo/parseMongoQuery.h>
@@ -127,6 +129,36 @@ void expandSubtreeUpdates(rapidjson::Value & update, const std::vector<String> &
     }
 }
 
+/// Throws if an assignment of the `ALTER TABLE ... UPDATE` that `ast` is names a column that the
+/// collection does not have.
+void rejectAssignmentsToMissingColumns(const ASTPtr & ast, const std::vector<String> & columns, const CollectionRef & collection)
+{
+    const auto * alter = ast->as<ASTAlterQuery>();
+    if (!alter || !alter->command_list)
+        return;
+
+    const std::unordered_set<std::string_view> column_set(columns.begin(), columns.end());
+    for (const auto & child : alter->command_list->children)
+    {
+        const auto * command = child->as<ASTAlterCommand>();
+        if (!command || command->type != ASTAlterCommand::UPDATE || !command->update_assignments)
+            continue;
+
+        for (const auto & assignment : command->update_assignments->children)
+        {
+            const auto & column = assignment->as<const ASTAssignment &>().column_name;
+            if (!column_set.contains(column))
+                throw Exception(
+                    ErrorCodes::BAD_ARGUMENTS,
+                    "The 'update' command updates the field '{}', which the collection '{}.{}' does not have: the fields of a "
+                    "collection are the ones of its first inserted document, and an update cannot add a new one",
+                    column,
+                    collection.database,
+                    collection.collection);
+        }
+    }
+}
+
 }
 
 std::vector<Document> UpdateHandler::handle(const std::vector<OpMessageSection> & sections, std::shared_ptr<QueryExecutor> executor)
@@ -138,6 +170,15 @@ std::vector<Document> UpdateHandler::handle(const std::vector<OpMessageSection> 
     /// The specs come either as an `updates` document sequence or as the `updates` array of the
     /// command body itself, see `getWriteBatch`.
     const auto update_specs = getWriteBatch(sections, "updates", "update");
+
+    /// An update of a collection that does not exist matches no document, which Mongo reports as
+    /// an update of zero documents rather than an error. So does an update of the placeholder of
+    /// `createCollection`, which has no columns for the filter to name yet.
+    const bool collection_exists = collectionHasSchema(collection, executor);
+
+    std::vector<String> columns;
+    if (collection_exists)
+        columns = getColumnNames(collection, executor);
 
     /// The 'update' command carries one or more update specs, each with its own 'q', 'u',
     /// 'multi', and 'upsert'. Execute every spec; 'multi: false' (updateOne) cannot be
@@ -166,6 +207,12 @@ std::vector<Document> UpdateHandler::handle(const std::vector<OpMessageSection> 
             collection.database,
             collection.collection);
 
+        /// A collection gets its columns from the first inserted document and an update does not
+        /// add any, so `$set` or `$inc` of a field that is not a column, or `$rename` to one, is
+        /// rejected here with an error that names the field, rather than reaching the mutation.
+        if (collection_exists)
+            rejectAssignmentsToMissingColumns(ast, columns, collection);
+
         String sql_query;
         {
             WriteBufferFromString buffer(sql_query);
@@ -173,15 +220,6 @@ std::vector<Document> UpdateHandler::handle(const std::vector<OpMessageSection> 
         }
         return sql_query;
     };
-
-    /// An update of a collection that does not exist matches no document, which Mongo reports as
-    /// an update of zero documents rather than an error. So does an update of the placeholder of
-    /// `createCollection`, which has no columns for the filter to name yet.
-    const bool collection_exists = collectionHasSchema(collection, executor);
-
-    std::vector<String> columns;
-    if (collection_exists)
-        columns = getColumnNames(collection, executor);
 
     Int64 matched = 0;
     for (const auto & update_spec : update_specs)
@@ -214,9 +252,9 @@ std::vector<Document> UpdateHandler::handle(const std::vector<OpMessageSection> 
 
         auto alter_settings = IAST::FormatSettings(true, IdentifierQuotingRule::WhenNecessary, IdentifierQuotingStyle::Backticks);
         const String alter_query = translate(
-            fmt::format("db.{}.updateMany({}, {})", collection.collection, serialized_filter, serialized_update), alter_settings);
+            fmt::format("{}.updateMany({}, {})", MONGO_DIALECT_PLACEHOLDER_NAMESPACE, serialized_filter, serialized_update), alter_settings);
         const String select_query
-            = translate(fmt::format("db.{}.find({})", collection.collection, serialized_filter), IAST::FormatSettings(true));
+            = translate(fmt::format("{}.find({})", MONGO_DIALECT_PLACEHOLDER_NAMESPACE, serialized_filter), IAST::FormatSettings(true));
 
         if (collection_exists)
         {

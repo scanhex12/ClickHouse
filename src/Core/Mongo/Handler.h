@@ -76,6 +76,14 @@ struct CollectionRef
     String getQualifiedName() const;
 };
 
+/** The namespace of the Mongo dialect text that a handler builds for a command. The text never
+  * holds the name of the collection itself: the parser cuts the namespace at the first `(` and
+  * the statement at the first `;`, both of which a collection name may contain, e.g.
+  * `sales(2026)`. The database and the collection are passed to `parseMongoQuery` explicitly and
+  * override this placeholder.
+  */
+inline constexpr std::string_view MONGO_DIALECT_PLACEHOLDER_NAMESPACE = "db.collection";
+
 /// Whether a database name is one `validateMongoDatabaseName` accepts.
 bool isValidMongoDatabaseName(const String & database);
 

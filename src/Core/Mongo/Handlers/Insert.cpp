@@ -334,18 +334,10 @@ void InsertHandler::createTable(
             query << ", ";
         query << backQuoteIfNeed(fields[i].full_name) << " " << fields[i].type;
     }
-    /// A `Dynamic` or `JSON` column cannot be a sorting key, so the key is the first column of
-    /// any other type, and a document with none of those gets no sorting key at all.
-    const DocumentField * key_field = nullptr;
-    for (const auto & field : fields)
-    {
-        if (!field.type.contains("Dynamic") && !field.type.contains("JSON"))
-        {
-            key_field = &field;
-            break;
-        }
-    }
-    query << ") ENGINE = MergeTree ORDER BY " << (key_field ? backQuoteIfNeed(key_field->full_name) : "tuple()");
+    /// No column is a sorting key: `ALTER TABLE ... UPDATE`, which implements `update`, cannot
+    /// change a key column, and every field of a Mongo document must stay updatable, renamable
+    /// and removable, whatever its position in the first inserted document.
+    query << ") ENGINE = MergeTree ORDER BY tuple()";
 
     executor->execute(query.str());
 }

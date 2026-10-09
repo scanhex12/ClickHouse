@@ -112,10 +112,9 @@ std::vector<Document> FindHandler::handle(const std::vector<OpMessageSection> & 
     if (!sorting.empty())
         sorting = modifyFilter(sorting);
 
-    /// The database is passed to the parser separately: a collection named in the query text
-    /// as `db.<collection>` keeps the text independent of the database name, which may itself
-    /// be `db`.
-    auto mongo_dialect_query = fmt::format("db.{}.find({})", collection.collection, serialized_filter);
+    /// The database and the collection are passed to the parser separately, so the text names
+    /// neither of them, see `MONGO_DIALECT_PLACEHOLDER_NAMESPACE`.
+    auto mongo_dialect_query = fmt::format("{}.find({})", MONGO_DIALECT_PLACEHOLDER_NAMESPACE, serialized_filter);
     if (limit_magnitude != 0)
         mongo_dialect_query += fmt::format(".limit({})", limit_magnitude);
     if (skip && *skip != 0)

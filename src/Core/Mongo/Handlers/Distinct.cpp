@@ -73,7 +73,7 @@ std::vector<Document> DistinctHandler::handle(const std::vector<OpMessageSection
     /// normalizes the same way the filter of a `find` is normalized.
     auto serialized_pipeline = serializePipeline(pipeline);
 
-    auto mongo_dialect_query = fmt::format("db.{}.aggregate({})", collection.collection, serialized_pipeline);
+    auto mongo_dialect_query = fmt::format("{}.aggregate({})", MONGO_DIALECT_PLACEHOLDER_NAMESPACE, serialized_pipeline);
 
     auto parser = Mongo::ParserMongoQuery(10000, 10000, 10000);
     auto ast = Mongo::parseMongoQuery(

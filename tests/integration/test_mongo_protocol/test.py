@@ -2276,6 +2276,50 @@ def test_unset_and_rename_of_a_subdocument(started_cluster):
     collection.drop()
 
 
+def test_every_field_is_updatable(started_cluster):
+    """No field is a sorting key, so the first field of the first document can be updated like any
+    other. A field that is not a column of the collection is rejected by name, since an update does
+    not add columns."""
+    client = make_client()
+    collection = client["db"]["every_field_updatable"]
+
+    collection.drop()
+    collection.insert_many([{"name": "alpha", "visits": 0}, {"name": "gamma", "visits": 0}])
+
+    collection.update_many({"name": "alpha"}, {"$set": {"name": "beta"}})
+    assert wait_for(lambda: sorted(doc["name"] for doc in collection.find({})) == ["beta", "gamma"])
+
+    with pytest.raises(pymongo.errors.OperationFailure, match="new_field"):
+        collection.update_many({"name": "beta"}, {"$set": {"new_field": 1}})
+    with pytest.raises(pymongo.errors.OperationFailure, match="new_visits"):
+        collection.update_many({"name": "beta"}, {"$rename": {"visits": "new_visits"}})
+
+    collection.drop()
+
+
+def test_collection_name_with_parentheses(started_cluster):
+    """The text that a command is translated through does not hold the collection name, so a name
+    with `(`, `)` or `;` in it is addressed like any other."""
+    client = make_client()
+    collection = client["db"]["sales(2026);x"]
+
+    collection.drop()
+    collection.insert_many([{"id": 1, "amount": 10}, {"id": 2, "amount": 20}])
+
+    assert [doc["id"] for doc in collection.find({"amount": {"$gt": 15}})] == [2]
+    assert collection.count_documents({}) == 2
+    assert sorted(collection.distinct("id")) == [1, 2]
+    assert [doc["id"] for doc in collection.aggregate([{"$match": {"id": 1}}])] == [1]
+
+    collection.update_many({"id": 1}, {"$inc": {"amount": 1}})
+    assert wait_for(lambda: collection.find_one({"id": 1})["amount"] == 11)
+
+    collection.delete_many({"id": 2})
+    assert wait_for(lambda: collection.count_documents({}) == 1)
+
+    collection.drop()
+
+
 def test_aggregate_cursor_must_be_well_formed(started_cluster):
     """The whole result of an `aggregate` is returned in its first batch, so `cursor.batchSize` only
     says how it is split, but a malformed `cursor` is still an error."""

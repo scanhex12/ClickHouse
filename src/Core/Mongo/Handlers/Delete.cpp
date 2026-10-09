@@ -100,8 +100,8 @@ std::vector<Document> DeleteHandler::handle(const std::vector<OpMessageSection> 
         }
         serialized_filter = modifyFilter(serialized_filter);
 
-        const String sql_query = translate(fmt::format("db.{}.deleteMany({})", collection.collection, serialized_filter));
-        const String select_query = translate(fmt::format("db.{}.find({})", collection.collection, serialized_filter));
+        const String sql_query = translate(fmt::format("{}.deleteMany({})", MONGO_DIALECT_PLACEHOLDER_NAMESPACE, serialized_filter));
+        const String select_query = translate(fmt::format("{}.find({})", MONGO_DIALECT_PLACEHOLDER_NAMESPACE, serialized_filter));
 
         if (collection_exists)
         {

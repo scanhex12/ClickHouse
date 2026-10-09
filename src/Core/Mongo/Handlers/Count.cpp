@@ -51,7 +51,7 @@ std::vector<Document> CountHandler::handle(const std::vector<OpMessageSection> &
     if (skip < 0)
         throw Exception(ErrorCodes::BAD_ARGUMENTS, "The 'skip' of a 'count' command must not be negative");
 
-    auto mongo_dialect_query = fmt::format("db.{}.find({})", collection.collection, serialized_filter);
+    auto mongo_dialect_query = fmt::format("{}.find({})", MONGO_DIALECT_PLACEHOLDER_NAMESPACE, serialized_filter);
     if (skip != 0)
         mongo_dialect_query += fmt::format(".skip({})", skip);
     if (limit != 0)
