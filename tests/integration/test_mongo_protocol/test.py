@@ -1217,6 +1217,43 @@ def test_oversized_reply_of_many_small_rows_is_an_error(started_cluster):
     node.query("DROP TABLE db.small_rows", password="123")
 
 
+def test_oversized_result_fails_while_the_query_runs(started_cluster):
+    """The text output of a query is bounded while the query runs, so a result far larger than
+    any reply that can be sent fails inside the query rather than being collected whole into
+    memory and rejected only while the reply is built."""
+    node = cluster.instances["node"]
+    node.query("CREATE DATABASE IF NOT EXISTS db", password="123")
+    node.query(
+        "CREATE TABLE db.huge_output (id Int32, s String) ENGINE = MergeTree ORDER BY id",
+        password="123",
+    )
+    # 200 rows of 1 MB each: the `FORMAT JSON` output exceeds the 128 MiB bound of the text.
+    node.query(
+        "INSERT INTO db.huge_output SELECT number, repeat('x', 1000000) FROM numbers(200)",
+        password="123",
+    )
+
+    client = make_client()
+    collection = client["db"]["huge_output"]
+
+    with pytest.raises(pymongo.errors.PyMongoError, match="its text exceeds"):
+        list(collection.find({}))
+
+    # The query itself failed, so the limit was hit while it ran.
+    node.query("SYSTEM FLUSH LOGS query_log", password="123")
+    assert (
+        node.query(
+            "SELECT count() FROM system.query_log WHERE type = 'ExceptionWhileProcessing' "
+            "AND query_id LIKE 'mongo:%' AND query LIKE '%huge_output%' "
+            "AND exception LIKE '%its text exceeds%'",
+            password="123",
+        ).strip()
+        != "0"
+    )
+
+    node.query("DROP TABLE db.huge_output", password="123")
+
+
 def test_oversized_distinct_is_an_error(started_cluster):
     """The reply to `distinct` holds all the values in one document, so it has the same size
     bound as the reply to `find`."""
