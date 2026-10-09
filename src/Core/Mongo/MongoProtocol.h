@@ -46,6 +46,14 @@ static constexpr UInt32 MAX_MESSAGE_SIZE = 48000000;
 /// from - every reply carries the whole result and a cursor id of 0.
 static constexpr UInt32 MAX_BSON_OBJECT_SIZE = 16777216;
 
+/// The largest text output of a query we are willing to collect before it is converted into a
+/// reply. The output is `FORMAT JSON`, which is larger than the BSON it becomes: the rows are
+/// indented and every value is followed by a line break, a `null` of a one-letter field takes
+/// almost five times its BSON size, and a control character escaped as `\u00XX` takes six times its
+/// size. A result whose reply fits into `MAX_BSON_OBJECT_SIZE` stays below this bound,
+/// while a much larger result fails while the query runs instead of being held whole in memory.
+static constexpr size_t MAX_QUERY_OUTPUT_SIZE = 8 * static_cast<size_t>(MAX_BSON_OBJECT_SIZE);
+
 /// The largest number of documents or specs in one write command, which is the
 /// `maxWriteBatchSize` we advertise. Drivers split a larger batch into several commands.
 static constexpr UInt32 MAX_WRITE_BATCH_SIZE = 100000;

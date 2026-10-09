@@ -1,6 +1,7 @@
 #include <cstdint>
 #include <Core/Mongo/Document.h>
 #include <Core/Mongo/MongoProtocol.h>
+#include <IO/BufferWithOwnMemory.h>
 #include <IO/ReadBufferFromString.h>
 #include <Interpreters/Context.h>
 #include <Interpreters/executeQuery.h>
@@ -11,10 +12,50 @@
 namespace DB::ErrorCodes
 {
 extern const int BAD_ARGUMENTS;
+extern const int LIMIT_EXCEEDED;
 }
 
 namespace DB::MongoProtocol
 {
+
+namespace
+{
+
+/// Collects the output of a query into a string and fails the query as soon as the output
+/// grows past `max_size`, so that a result too large to be sent is never held whole in memory.
+class BoundedStringWriteBufferImpl : public BufferWithOwnMemory<WriteBuffer>
+{
+public:
+    explicit BoundedStringWriteBufferImpl(size_t max_size_)
+        : max_size(max_size_)
+    {
+    }
+
+    String & str()
+    {
+        finalize();
+        return result;
+    }
+
+private:
+    void nextImpl() override
+    {
+        if (result.size() + offset() > max_size)
+            throw Exception(
+                ErrorCodes::LIMIT_EXCEEDED,
+                "The result is larger than the largest reply that can be sent: its text exceeds {} bytes. "
+                "Ask for less at a time, with a filter, a projection, 'limit' and 'skip'",
+                max_size);
+        result.append(working_buffer.begin(), offset());
+    }
+
+    const size_t max_size;
+    String result;
+};
+
+using BoundedStringWriteBuffer = AutoCanceledWriteBuffer<BoundedStringWriteBufferImpl>;
+
+}
 
 Header::Header(const Header & other)
 {
@@ -117,10 +158,14 @@ String QueryExecutor::execute(const String & query, const SettingsChanges & extr
     auto query_scope = QueryScope::create(query_context);
     ReadBufferFromString read_buf(query);
 
-    WriteBufferFromOwnString out;
+    /// Every output is turned into a reply, which is one BSON document of at most
+    /// `MAX_BSON_OBJECT_SIZE` bytes. The exact bound is checked while the reply is built, but
+    /// that happens after the query has finished, so the text of the output is bounded here
+    /// as well, while the query runs (see `MAX_QUERY_OUTPUT_SIZE`).
+    BoundedStringWriteBuffer out(MAX_QUERY_OUTPUT_SIZE);
     executeQuery(read_buf, out, query_context, {});
 
-    return out.str();
+    return std::move(out.str());
 }
 
 void QueryExecutor::authenticate(const String & username, const String & password)

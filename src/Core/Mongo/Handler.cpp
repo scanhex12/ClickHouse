@@ -579,7 +579,8 @@ executeSelectIntoCursor(const String & sql_query, const CollectionRef & collecti
     /// the `firstBatch` array - the type byte and the decimal index as a NUL-terminated key -
     /// and the envelope around the batch is measured by building the reply with no rows. The
     /// bound is checked while the rows are collected, so an oversized result is dropped before
-    /// it is held whole in memory.
+    /// its reply is held whole in memory; the text output of the query itself is bounded while
+    /// the query runs (see `MAX_QUERY_OUTPUT_SIZE`).
     size_t reply_size = buildCursorReply({}, collection).getBson()->len;
 
     std::vector<Document> selected;
