@@ -107,6 +107,12 @@ std::vector<Document> AggregateHandler::handle(const std::vector<OpMessageSectio
 
     auto json_representation = document.getRapidJSONRepresentation();
     rejectUnsupportedOptions(json_representation, "aggregate", {"collation", "let"});
+    /// `allowDiskUse: true` permits spilling to disk, which the query may or may not do. `false`
+    /// forbids it, but ClickHouse spills a large aggregation or sort by default (see
+    /// `max_bytes_ratio_before_external_group_by`), so it would answer a stricter request than
+    /// it honours.
+    if (!getBoolOption(json_representation, "allowDiskUse", "aggregate").value_or(true))
+        throw Exception(ErrorCodes::NOT_IMPLEMENTED, "The option 'allowDiskUse: false' of an 'aggregate' command is not supported");
     auto pipeline_it = json_representation.FindMember("pipeline");
     if (pipeline_it == json_representation.MemberEnd() || !pipeline_it->value.IsArray())
         throw Exception(ErrorCodes::BAD_ARGUMENTS, "The 'pipeline' of an 'aggregate' command must be an array of stages");
@@ -133,17 +139,7 @@ std::vector<Document> AggregateHandler::handle(const std::vector<OpMessageSectio
     {
         auto mongo_dialect_query = fmt::format("{}.aggregate({})", MONGO_DIALECT_PLACEHOLDER_NAMESPACE, serializePipeline(pipeline));
 
-        auto parser = Mongo::ParserMongoQuery(10000, 10000, 10000);
-        auto ast = Mongo::parseMongoQuery(
-            parser,
-            mongo_dialect_query.data(),
-            mongo_dialect_query.data() + mongo_dialect_query.size(),
-            "",
-            10000,
-            10000,
-            10000,
-            collection.database,
-            collection.collection);
+        auto ast = parseMongoDialectCommand(mongo_dialect_query, collection, *executor);
 
         String sql_query;
         {
@@ -197,7 +193,7 @@ std::vector<Document> AggregateHandler::handle(const std::vector<OpMessageSectio
     if (removed_unions)
         sql_query = translate(pipeline_it->value);
 
-    return executeSelectIntoCursor(sql_query, collection, executor);
+    return executeSelectIntoCursor(sql_query, collection, executor, getMaxTimeSettings(json_representation, "aggregate"));
 }
 
 void registerAggregateHandler(HandlerRegitstry * registry)

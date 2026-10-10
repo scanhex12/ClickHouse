@@ -168,6 +168,11 @@ String QueryExecutor::execute(const String & query, const SettingsChanges & extr
     return std::move(out.str());
 }
 
+ContextPtr QueryExecutor::getSessionContext() const
+{
+    return session->sessionOrGlobalContext();
+}
+
 void QueryExecutor::authenticate(const String & username, const String & password)
 {
     session->authenticate(username, password, address);

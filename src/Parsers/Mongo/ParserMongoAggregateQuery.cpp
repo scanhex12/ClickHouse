@@ -621,8 +621,13 @@ void translateUnwind(SelectChain & chain, const rapidjson::Value & stage)
             throw Exception(ErrorCodes::BAD_ARGUMENTS, "The 'path' of '$unwind' must be a field path");
         path = stringView(path_value);
 
-        if (auto it = stage.FindMember("preserveNullAndEmptyArrays"); it != stage.MemberEnd())
-            preserve_empty = it->value.IsBool() && it->value.GetBool();
+        if (auto it = stage.FindMember("preserveNullAndEmptyArrays"); it != stage.MemberEnd() && !it->value.IsNull())
+        {
+            /// Reading another type as `false` would silently drop the documents the client asked to keep.
+            if (!it->value.IsBool())
+                throw Exception(ErrorCodes::BAD_ARGUMENTS, "The 'preserveNullAndEmptyArrays' of '$unwind' must be a boolean");
+            preserve_empty = it->value.GetBool();
+        }
         if (auto it = stage.FindMember("includeArrayIndex"); it != stage.MemberEnd() && !it->value.IsNull())
         {
             if (!it->value.IsString())

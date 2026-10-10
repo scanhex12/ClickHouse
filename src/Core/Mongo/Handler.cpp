@@ -13,7 +13,11 @@
 #include <Core/Mongo/MongoProtocol.h>
 #include <Core/Mongo/Wire/OpMessage.h>
 #include <Core/Mongo/Wire/OpQuery.h>
+#include <Core/Settings.h>
+#include <Interpreters/Context.h>
 #include <Parsers/Mongo/MongoConstants.h>
+#include <Parsers/Mongo/ParserMongoQuery.h>
+#include <Parsers/Mongo/parseMongoQuery.h>
 #include <DataTypes/DataTypeArray.h>
 #include <DataTypes/DataTypeDateTime.h>
 #include <DataTypes/DataTypeDateTime64.h>
@@ -33,6 +37,13 @@
 #include <rapidjson/stringbuffer.h>
 #include <rapidjson/writer.h>
 #include <Common/re2.h>
+
+namespace DB::Setting
+{
+extern const SettingsUInt64 max_parser_backtracks;
+extern const SettingsUInt64 max_parser_depth;
+extern const SettingsUInt64 max_query_size;
+}
 
 namespace DB::ErrorCodes
 {
@@ -568,8 +579,8 @@ Document buildCursorReply(const std::vector<Document> & selected, const Collecti
 
 }
 
-std::vector<Document>
-executeSelectIntoCursor(const String & sql_query, const CollectionRef & collection, std::shared_ptr<QueryExecutor> executor)
+std::vector<Document> executeSelectIntoCursor(
+    const String & sql_query, const CollectionRef & collection, std::shared_ptr<QueryExecutor> executor, const SettingsChanges & extra_settings)
 {
     /// The reply is one BSON document holding the whole result: the cursor id is always 0,
     /// so there is no `getMore` to continue from, and a result that does not fit into the
@@ -585,7 +596,7 @@ executeSelectIntoCursor(const String & sql_query, const CollectionRef & collecti
 
     std::vector<Document> selected;
     {
-        auto output = executor->execute(sql_query);
+        auto output = executor->execute(sql_query, extra_settings);
 
         rapidjson::Document result_json;
         if (result_json.Parse(output.data()).HasParseError())
@@ -847,6 +858,26 @@ void rejectUnsupportedOptions(const rapidjson::Value & json, const char * comman
     }
 }
 
+ASTPtr parseMongoDialectCommand(const String & mongo_dialect_query, const CollectionRef & collection, const QueryExecutor & executor)
+{
+    const auto & settings = executor.getSessionContext()->getSettingsRef();
+    const size_t max_query_size = settings[Setting::max_query_size];
+    const size_t max_parser_depth = settings[Setting::max_parser_depth];
+    const size_t max_parser_backtracks = settings[Setting::max_parser_backtracks];
+
+    Mongo::ParserMongoQuery parser(max_query_size, max_parser_depth, max_parser_backtracks);
+    return Mongo::parseMongoQuery(
+        parser,
+        mongo_dialect_query.data(),
+        mongo_dialect_query.data() + mongo_dialect_query.size(),
+        "",
+        max_query_size,
+        max_parser_depth,
+        max_parser_backtracks,
+        collection.database,
+        collection.collection);
+}
+
 String CollectionRef::getQualifiedName() const
 {
     return backQuoteIfNeed(database) + "." + backQuoteIfNeed(collection);
@@ -930,6 +961,20 @@ std::optional<bool> getBoolOption(const rapidjson::Value & json, const char * na
     if (!it->value.IsBool())
         throw Exception(ErrorCodes::BAD_ARGUMENTS, "The '{}' of a '{}' command must be a boolean", name, command);
     return it->value.GetBool();
+}
+
+SettingsChanges getMaxTimeSettings(const rapidjson::Value & json, const char * command)
+{
+    auto max_time_ms = getWholeNumberOption(json, "maxTimeMS", command);
+    if (!max_time_ms || *max_time_ms == 0)
+        return {};
+    if (*max_time_ms < 0)
+        throw Exception(ErrorCodes::BAD_ARGUMENTS, "The 'maxTimeMS' of a '{}' command must not be negative", command);
+
+    SettingsChanges settings;
+    settings.emplace_back("max_execution_time", Field(static_cast<Float64>(*max_time_ms) / 1000));
+    settings.emplace_back("timeout_overflow_mode", Field("throw"));
+    return settings;
 }
 
 std::function<bool(const String &)> getNameFilter(const rapidjson::Value & command, const char * command_name)

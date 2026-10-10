@@ -57,17 +57,7 @@ std::vector<Document> CountHandler::handle(const std::vector<OpMessageSection> &
     if (limit != 0)
         mongo_dialect_query += fmt::format(".limit({})", limit < 0 ? -static_cast<UInt64>(limit) : static_cast<UInt64>(limit));
 
-    auto parser = Mongo::ParserMongoQuery(10000, 10000, 10000);
-    auto ast = Mongo::parseMongoQuery(
-        parser,
-        mongo_dialect_query.data(),
-        mongo_dialect_query.data() + mongo_dialect_query.size(),
-        "",
-        10000,
-        10000,
-        10000,
-        collection.database,
-        collection.collection);
+    auto ast = parseMongoDialectCommand(mongo_dialect_query, collection, *executor);
 
     String sql_query;
     {
@@ -81,7 +71,8 @@ std::vector<Document> CountHandler::handle(const std::vector<OpMessageSection> &
     Int64 count = 0;
     if (collectionHasSchema(collection, executor))
     {
-        auto output = executor->execute(fmt::format("SELECT count() FROM ({}) FORMAT TSV", sql_query));
+        auto output = executor->execute(
+            fmt::format("SELECT count() FROM ({}) FORMAT TSV", sql_query), getMaxTimeSettings(json_representation, "count"));
 
         /// A ClickHouse table is free to hold more rows than an `int32` can count.
         count = std::stoll(output);

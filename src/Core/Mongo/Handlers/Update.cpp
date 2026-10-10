@@ -195,17 +195,7 @@ std::vector<Document> UpdateHandler::handle(const std::vector<OpMessageSection> 
     /// `updateMany` matched nothing.
     auto translate = [&](const String & mongo_dialect_query, const IAST::FormatSettings & format_settings)
     {
-        auto parser = Mongo::ParserMongoQuery(10000, 10000, 10000);
-        auto ast = Mongo::parseMongoQuery(
-            parser,
-            mongo_dialect_query.data(),
-            mongo_dialect_query.data() + mongo_dialect_query.size(),
-            "",
-            10000,
-            10000,
-            10000,
-            collection.database,
-            collection.collection);
+        auto ast = parseMongoDialectCommand(mongo_dialect_query, collection, *executor);
 
         /// A collection gets its columns from the first inserted document and an update does not
         /// add any, so `$set` or `$inc` of a field that is not a column, or `$rename` to one, is

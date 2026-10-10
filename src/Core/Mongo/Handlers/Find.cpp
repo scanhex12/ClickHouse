@@ -122,17 +122,7 @@ std::vector<Document> FindHandler::handle(const std::vector<OpMessageSection> & 
     if (!sorting.empty())
         mongo_dialect_query += fmt::format(".sort({})", sorting);
 
-    auto parser = Mongo::ParserMongoQuery(10000, 10000, 10000);
-    auto ast = Mongo::parseMongoQuery(
-        parser,
-        mongo_dialect_query.data(),
-        mongo_dialect_query.data() + mongo_dialect_query.size(),
-        "",
-        10000,
-        10000,
-        10000,
-        collection.database,
-        collection.collection);
+    auto ast = parseMongoDialectCommand(mongo_dialect_query, collection, *executor);
 
     String sql_query;
     {
@@ -149,7 +139,7 @@ std::vector<Document> FindHandler::handle(const std::vector<OpMessageSection> & 
     if (!collectionHasSchema(collection, executor))
         return makeEmptyCursorReply(collection);
 
-    return executeSelectIntoCursor(sql_query, collection, executor);
+    return executeSelectIntoCursor(sql_query, collection, executor, getMaxTimeSettings(json_representation, "find"));
 }
 
 void registerFindHandler(HandlerRegitstry * registry)

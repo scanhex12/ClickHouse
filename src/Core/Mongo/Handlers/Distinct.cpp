@@ -75,17 +75,7 @@ std::vector<Document> DistinctHandler::handle(const std::vector<OpMessageSection
 
     auto mongo_dialect_query = fmt::format("{}.aggregate({})", MONGO_DIALECT_PLACEHOLDER_NAMESPACE, serialized_pipeline);
 
-    auto parser = Mongo::ParserMongoQuery(10000, 10000, 10000);
-    auto ast = Mongo::parseMongoQuery(
-        parser,
-        mongo_dialect_query.data(),
-        mongo_dialect_query.data() + mongo_dialect_query.size(),
-        "",
-        10000,
-        10000,
-        10000,
-        collection.database,
-        collection.collection);
+    auto ast = parseMongoDialectCommand(mongo_dialect_query, collection, *executor);
 
     String sql_query;
     {
@@ -124,7 +114,7 @@ std::vector<Document> DistinctHandler::handle(const std::vector<OpMessageSection
         return result;
     }
 
-    auto output = executor->execute(sql_query);
+    auto output = executor->execute(sql_query, getMaxTimeSettings(json_representation, "distinct"));
 
     rapidjson::Document result_json;
     if (result_json.Parse(output.data()).HasParseError())

@@ -265,20 +265,30 @@ std::vector<InsertHandler::DocumentField> inferSchema(const rapidjson::Value & f
 
 void InsertHandler::createDatabase(const CollectionRef & collection, std::shared_ptr<QueryExecutor> executor)
 {
+    /// The access rights of a `CREATE ... IF NOT EXISTS` are checked before it finds out that there
+    /// is nothing to create, so it is only issued for a database that is missing: an `insert` into
+    /// an existing collection must need no more than the `INSERT` grant.
+    if (objectExists(executor, "DATABASE", backQuoteIfNeed(collection.database)))
+        return;
     executor->execute(fmt::format("CREATE DATABASE IF NOT EXISTS {}", backQuoteIfNeed(collection.database)));
 }
 
 void InsertHandler::createTable(
     const CollectionRef & collection, std::shared_ptr<QueryExecutor> executor, const std::vector<DocumentField> & fields)
 {
+    /// A collection that already has its columns needs nothing created, and no DDL is issued for
+    /// it, see `createDatabase`. An empty document is a valid one there too: it is a row in which
+    /// every field is absent, i.e. has the default value of its column, the same as any field a
+    /// document does not have.
+    const bool table_exists = objectExists(executor, "TABLE", collection.getQualifiedName());
+    const bool is_placeholder = table_exists && isPlaceholderCollection(collection, executor);
+    if (table_exists && !is_placeholder)
+        return;
+
     if (fields.empty())
     {
-        /// An empty document is a valid one: in a collection that already has its columns it is a
-        /// row in which every field is absent, i.e. has the default value of its column, the same
-        /// as any field a document does not have. Only a new collection cannot get its columns
-        /// from it.
-        if (collectionHasSchema(collection, executor))
-            return;
+        /// Only a new collection (or the placeholder of `createCollection`) cannot get its columns
+        /// from an empty document.
         throw Exception(
             ErrorCodes::BAD_ARGUMENTS,
             "Can not create the collection '{}.{}': its columns are inferred from the first inserted document, which has no fields "
@@ -287,7 +297,7 @@ void InsertHandler::createTable(
             collection.collection);
     }
 
-    if (isPlaceholderCollection(collection, executor))
+    if (is_placeholder)
     {
         /// The placeholder is given the schema of the first inserted document, so that a
         /// collection created explicitly ends up with the same columns as one created by the

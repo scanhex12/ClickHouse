@@ -2374,3 +2374,67 @@ def test_aggregate_cursor_must_be_well_formed(started_cluster):
             database.command({"aggregate": "aggregate_cursor", "pipeline": [], "cursor": cursor})
 
     collection.drop()
+
+
+def test_read_commands_apply_max_time_ms(started_cluster):
+    """The `maxTimeMS` of a read command becomes the `max_execution_time` of the query that answers
+    it, rather than being dropped, and `allowDiskUse: false`, which ClickHouse cannot promise, is
+    rejected."""
+    node = cluster.instances["node"]
+    client = make_client()
+    database = client["db"]
+    collection = database["max_time_ms"]
+    collection.drop()
+    collection.insert_many([{"id": 1, "tags": ["a"]}, {"id": 2, "tags": ["b"]}])
+
+    assert len(database.command({"find": "max_time_ms", "maxTimeMS": 4321})["cursor"]["firstBatch"]) == 2
+    assert database.command({"count": "max_time_ms", "maxTimeMS": 4321})["n"] == 2
+    assert sorted(database.command({"distinct": "max_time_ms", "key": "id", "maxTimeMS": 4321})["values"]) == [1, 2]
+    reply = database.command({"aggregate": "max_time_ms", "pipeline": [], "cursor": {}, "maxTimeMS": 4321})
+    assert len(reply["cursor"]["firstBatch"]) == 2
+
+    node.query("SYSTEM FLUSH LOGS query_log", password="123")
+    timeouts = node.query(
+        "SELECT DISTINCT Settings['max_execution_time'] FROM system.query_log "
+        "WHERE type = 'QueryFinish' AND query LIKE '%max_time_ms%' AND query_kind = 'Select' AND has(tables, 'db.max_time_ms')",
+        password="123",
+    ).split()
+    assert timeouts == ["4.321"]
+
+    with pytest.raises(pymongo.errors.OperationFailure):
+        database.command({"count": "max_time_ms", "maxTimeMS": -1})
+
+    assert len(list(collection.aggregate([], allowDiskUse=True))) == 2
+    with pytest.raises(pymongo.errors.OperationFailure, match="allowDiskUse"):
+        list(collection.aggregate([], allowDiskUse=False))
+
+    # A non-boolean `preserveNullAndEmptyArrays` is an error rather than an inner unwind.
+    with pytest.raises(pymongo.errors.OperationFailure, match="preserveNullAndEmptyArrays"):
+        list(collection.aggregate([{"$unwind": {"path": "$tags", "preserveNullAndEmptyArrays": 1}}]))
+
+    # The text a command is translated through is bounded by the `max_query_size` of the session,
+    # not by a limit of its own.
+    assert collection.count_documents({"id": {"$in": list(range(5000))}}) == 2
+
+    collection.drop()
+
+
+def test_insert_into_an_existing_collection_needs_no_ddl_grants(started_cluster):
+    """An `insert` into a collection that already exists issues no `CREATE` or `ALTER`, so the
+    `INSERT` grant is enough for it."""
+    node = cluster.instances["node"]
+    node.query("DROP USER IF EXISTS mongo_writer", password="123")
+    node.query("CREATE USER mongo_writer IDENTIFIED WITH plaintext_password BY 'mongo_pass'", password="123")
+
+    owner = make_client()
+    collection = owner["db"]["insert_grants"]
+    collection.drop()
+    collection.insert_many([{"id": 1}])
+
+    node.query("GRANT SELECT, INSERT ON db.insert_grants TO mongo_writer", password="123")
+    writer = make_client(user="mongo_writer", password="mongo_pass", database="db")
+    writer["db"]["insert_grants"].insert_many([{"id": 2}])
+    assert sorted(doc["id"] for doc in collection.find({})) == [1, 2]
+
+    collection.drop()
+    node.query("DROP USER mongo_writer", password="123")

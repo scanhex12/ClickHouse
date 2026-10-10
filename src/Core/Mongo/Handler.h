@@ -84,6 +84,12 @@ struct CollectionRef
   */
 inline constexpr std::string_view MONGO_DIALECT_PLACEHOLDER_NAMESPACE = "db.collection";
 
+/** Parses the Mongo dialect text that a handler builds for a command on `collection`, with the
+  * parser limits of the session (`max_query_size`, `max_parser_depth`, `max_parser_backtracks`),
+  * the same ones a query of the dialect sent over the other interfaces is parsed with.
+  */
+ASTPtr parseMongoDialectCommand(const String & mongo_dialect_query, const CollectionRef & collection, const QueryExecutor & executor);
+
 /// Whether a database name is one `validateMongoDatabaseName` accepts.
 bool isValidMongoDatabaseName(const String & database);
 
@@ -117,8 +123,11 @@ std::vector<std::pair<String, DataTypePtr>> extractResultColumns(const rapidjson
   * the dotted name of a column - the way the dialect addresses a nested field - becomes the
   * nested document it names: the row `{"profile.name": "x"}` returns as `{"profile": {"name": "x"}}`.
   */
-std::vector<Document>
-executeSelectIntoCursor(const String & sql_query, const CollectionRef & collection, std::shared_ptr<QueryExecutor> executor);
+std::vector<Document> executeSelectIntoCursor(
+    const String & sql_query,
+    const CollectionRef & collection,
+    std::shared_ptr<QueryExecutor> executor,
+    const SettingsChanges & extra_settings = {});
 
 /** The reply of a document-returning command whose result is empty: a cursor with no rows in
   * its first batch. Mongo reads a collection that does not exist as empty rather than raising
@@ -161,6 +170,13 @@ std::function<bool(const String &)> getNameFilter(const rapidjson::Value & comma
   * absent or null; a value of another type is an error.
   */
 std::optional<bool> getBoolOption(const rapidjson::Value & json, const char * name, const char * command);
+
+/** The `maxTimeMS` of a read command - `find`, `count`, `distinct` and `aggregate` - as the settings
+  * of the query that answers it: `max_execution_time` with `timeout_overflow_mode = 'throw'`. A
+  * request with a deadline must not run without one. Nothing, i.e. the limits of the user's
+  * profile, for an absent `maxTimeMS` and for `0`, which Mongo reads as no limit.
+  */
+SettingsChanges getMaxTimeSettings(const rapidjson::Value & json, const char * command);
 
 /** The number of rows a translated `find` returns, i.e. the number of documents a filter matches.
   * A mutation of ClickHouse is asynchronous and reports nothing about the rows it will rewrite,

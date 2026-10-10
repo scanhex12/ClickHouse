@@ -47,17 +47,7 @@ std::vector<Document> DeleteHandler::handle(const std::vector<OpMessageSection> 
     /// would both count the same rows and the reply would over-report the deletion.
     auto translate = [&](const String & mongo_dialect_query)
     {
-        auto parser = Mongo::ParserMongoQuery(10000, 10000, 10000);
-        auto ast = Mongo::parseMongoQuery(
-            parser,
-            mongo_dialect_query.data(),
-            mongo_dialect_query.data() + mongo_dialect_query.size(),
-            "",
-            10000,
-            10000,
-            10000,
-            collection.database,
-            collection.collection);
+        auto ast = parseMongoDialectCommand(mongo_dialect_query, collection, *executor);
 
         String sql_query;
         {

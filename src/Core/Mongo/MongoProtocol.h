@@ -184,6 +184,9 @@ public:
     /// successful `saslStart`.
     String getAuthenticatedUserName() const;
 
+    /// The context of the session, whose settings are the ones of the authenticated user.
+    ContextPtr getSessionContext() const;
+
 private:
     std::unique_ptr<Session> & session;
     Poco::Net::SocketAddress address;
